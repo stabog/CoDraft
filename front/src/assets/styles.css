@@ -186,11 +186,22 @@ select:focus {
 }
 
 .status-bar-left,
+.status-bar-center,
 .status-bar-right {
   align-items: center;
   display: flex;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
+}
+
+.status-bar-center {
+  color: var(--text-muted);
+  flex: 1;
+  font-size: 11px;
+  justify-content: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-dot {

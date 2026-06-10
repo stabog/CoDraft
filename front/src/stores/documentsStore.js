@@ -19,7 +19,13 @@ export const useDocumentsStore = defineStore('documents', {
     capabilities: (state) => state.currentDocument?.capabilities ?? null,
     headVersion: (state) => state.versions[0] ?? null,
     canEditDraft: (state) => state.currentDocument?.capabilities?.canEditDraft ?? false,
-    isCurrentActor: (state) => state.currentDocument?.capabilities?.isCurrentActor ?? false,
+    canTakeLock: (state) => state.currentDocument?.capabilities?.canTakeLock ?? false,
+    isActiveEditor: (state) => state.currentDocument?.capabilities?.isActiveEditor ?? false,
+    asyncWorkflow: (state) => state.currentDocument?.asyncWorkflow ?? 'round',
+    isRound: (state) => state.currentDocument?.asyncWorkflow === 'round',
+    isOwnerHub: (state) => state.currentDocument?.asyncWorkflow === 'owner_hub',
+    activeEditor: (state) => state.currentDocument?.activeEditorId ?? null,
+    canFixVersion: (state) => state.currentDocument?.capabilities?.canFixVersion ?? false,
   },
 
   actions: {
@@ -71,6 +77,14 @@ export const useDocumentsStore = defineStore('documents', {
       } finally {
         this.saving = false
       }
+    },
+
+    async acquireEditLock(documentId, actor) {
+      this.currentDocument = await documentsApi.acquireEditLock(documentId, actor)
+    },
+
+    async releaseEditLock(documentId, actor) {
+      this.currentDocument = await documentsApi.releaseEditLock(documentId, actor)
     },
 
     async updateActorDraft(documentId, actor, payload) {

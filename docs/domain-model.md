@@ -70,7 +70,7 @@ Submit (`submitEdit` / `submitActorEdit`) — только в **owner hub**: for
 | `number` | 1, 2, 3… |
 | `author` | `UserRef` — кто завершил раунд |
 | `title`, `content` | Полный снимок |
-| `summary` | Что сделано в раунде |
+| `summary` | Краткое описание версии (опционально; по умолчанию «Версия N», позже — LLM) |
 | `incorporatedEditIds` | Owner hub: какие правки учтены |
 | `createdAt` | |
 | `handoff` | Handoff: `{ to: UserRef }` при передаче хода |
@@ -118,7 +118,7 @@ Submit (`submitEdit` / `submitActorEdit`) — только в **owner hub**: for
 | Действие | Участник с lock | Остальные | Между раундами (`activeEditorId = null`) |
 |----------|-----------------|-----------|------------------------------------------|
 | Редактировать draft | да | нет (read) | любой может захватить lock |
-| Зафиксировать версию | да (держит lock) | нет | — |
+| Сохранить (версию) | да (держит lock) | нет | — |
 | Комментировать | да | да | да |
 
 Capabilities: `canEditDraft`, `canFixVersion`, `canComment`. `canSubmitEdit` / `canApplyEdit` — false.
@@ -128,7 +128,7 @@ Capabilities: `canEditDraft`, `canFixVersion`, `canComment`. `canSubmitEdit` / `
 | Действие | owner | остальные |
 |----------|-------|-----------|
 | Редактировать draft | да | нет (fork + submit) |
-| Зафиксировать версию | да | нет |
+| Сохранить (версию) | да | нет |
 | Отправить правку (`submitEdit`) | нет | да |
 | Применить / отклонить правку | да | нет |
 | Комментировать | да | да |

@@ -156,7 +156,7 @@
 |-------|----------|
 | `listVersions(documentId, actor)` | number desc |
 | `getVersion(documentId, versionId, actor)` | |
-| `fixVersion(documentId, actor, { summary, incorporatedEditIds? })` | Снимок draft → vN+1; round: `activeEditorId = null` |
+| `fixVersion(documentId, actor, { summary?, incorporatedEditIds? })` | Снимок draft → vN+1; `summary` опционально (по умолчанию «Версия N»; позже LLM); round: `activeEditorId = null` |
 | `restoreVersionToDraft(documentId, versionId, actor)` | Без новой версии; round: захват lock |
 
 ### Правки (Edit, owner hub)
@@ -195,7 +195,8 @@
 | История | `listVersions` |
 | Конкретная версия | `getVersion` |
 | Правка | `updateDraft` (при своём lock) |
-| Завершить раунд | `fixVersion` |
+| Сохранить (UI) / завершить раунд | `fixVersion` |
+| Редактировать (UI) | `acquireEditLock` |
 
 ---
 

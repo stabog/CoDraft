@@ -1,11 +1,12 @@
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import MarkdownEditor from '../components/editor/MarkdownEditor.vue'
 import VisualEditor from '../components/editor/VisualEditor.vue'
 import ReviewPanel from '../components/review/ReviewPanel.vue'
 import ReviewPreview from '../components/review/ReviewPreview.vue'
 import VersionPanel from '../components/history/VersionPanel.vue'
+import { useEditorDocumentStatus } from '../composables/useEditorDocumentStatus'
 import { useSidebarState } from '../composables/useSidebarState'
 import { useDocumentsStore } from '../stores/documentsStore'
 import { useUserStore } from '../stores/userStore'
@@ -34,11 +35,24 @@ const showSubmitForm = ref(false)
 const capabilities = computed(() => documentsStore.capabilities)
 const headVersion = computed(() => documentsStore.headVersion)
 const headSnapshot = computed(() => documentsStore.headSnapshot)
-const canEdit = computed(() => documentsStore.canEditDraft)
-const isCurrentActor = computed(() => documentsStore.isCurrentActor)
-const isHandoff = computed(() => documentsStore.currentDocument?.asyncWorkflow === 'handoff')
+const isRound = computed(() => documentsStore.isRound)
+const isOwnerHub = computed(() => documentsStore.isOwnerHub)
+const isActiveEditor = computed(() => documentsStore.isActiveEditor)
+const canTakeLock = computed(() => documentsStore.canTakeLock)
 const canEditActorDraft = computed(() => capabilities.value?.canEditActorDraft ?? false)
+const canFixVersion = computed(() => documentsStore.canFixVersion)
 const actorDraftMeta = computed(() => documentsStore.actorDraft)
+const activeEditor = computed(() => documentsStore.activeEditor)
+
+const isWritable = computed(() => {
+  if (isRound.value) return isActiveEditor.value
+  if (isOwnerHub.value) {
+    return (capabilities.value?.canEditDraft ?? false) || canEditActorDraft.value
+  }
+  return capabilities.value?.canEditDraft ?? false
+})
+
+const showReviewMode = computed(() => isOwnerHub.value)
 
 const baseTitle = computed(() => headSnapshot.value?.title ?? headVersion.value?.title ?? '')
 const baseContent = computed(() => headSnapshot.value?.content ?? headVersion.value?.content ?? '')
@@ -53,17 +67,30 @@ const hasUnsubmittedChanges = computed(() => {
   return hasChangesSinceVersion.value
 })
 
-const saveStatus = computed(() => {
-  if (canEditActorDraft.value) {
-    if (actorDraftMeta.value?.needsRebase) return 'Черновик устарел'
-    if (documentsStore.saving) return 'Сохраняем черновик...'
-    if (hasUnsubmittedChanges.value) return 'Черновик не отправлен'
-    return 'Синхронизировано с v' + (headVersion.value?.number ?? '')
-  }
-  if (!canEdit.value) return 'Только просмотр'
-  if (documentsStore.saving) return 'Сохраняем...'
-  return 'Сохранено'
+const { wordCount, charCount, statusText, readonlyHint, editModeTitle } = useEditorDocumentStatus({
+  draft,
+  documentsStore,
+  headVersion,
+  isRound,
+  isOwnerHub,
+  isActiveEditor,
+  canTakeLock,
+  canEditActorDraft,
+  isWritable,
+  capabilities,
+  actorDraftMeta,
+  hasChangesSinceVersion,
+  hasUnsubmittedChanges,
+  activeEditor,
 })
+
+const footerStatus = computed(() => ({
+  statusText: statusText.value,
+  wordCount: wordCount.value,
+  charCount: charCount.value,
+}))
+
+provide('editorFooterStatus', footerStatus)
 
 onMounted(async () => {
   await documentsStore.loadEditorBundle(route.params.id, userStore.actor)
@@ -84,12 +111,18 @@ function syncDraftFromStore() {
   const doc = documentsStore.currentDocument
   if (!doc) return
 
-  if (doc.capabilities?.canEditDraft && doc.draft) {
+  if (isRound.value && doc.draft) {
+    draft.title = doc.draft.title
+    draft.content = doc.draft.content
+  } else if (doc.capabilities?.canEditDraft && doc.draft) {
     draft.title = doc.draft.title
     draft.content = doc.draft.content
   } else if (documentsStore.actorDraft) {
     draft.title = documentsStore.actorDraft.title
     draft.content = documentsStore.actorDraft.content
+  } else if (doc.draft) {
+    draft.title = doc.draft.title
+    draft.content = doc.draft.content
   } else if (headSnapshot.value) {
     draft.title = headSnapshot.value.title
     draft.content = headSnapshot.value.content
@@ -100,19 +133,18 @@ function syncDraftFromStore() {
 }
 
 function scheduleSave() {
-  if (!ready.value) return
-  if (!canEdit.value && !canEditActorDraft.value) return
+  if (!ready.value || !isWritable.value) return
 
   clearTimeout(saveTimer.value)
   if (draft.title === lastSavedTitle.value && draft.content === lastSavedContent.value) return
 
   saveTimer.value = setTimeout(async () => {
-    if (canEdit.value) {
+    if (isRound.value || (isOwnerHub.value && capabilities.value?.canEditDraft)) {
       await documentsStore.updateDraft(route.params.id, userStore.actor, {
         title: draft.title,
         content: draft.content,
       })
-    } else {
+    } else if (canEditActorDraft.value) {
       await documentsStore.updateActorDraft(route.params.id, userStore.actor, {
         title: draft.title,
         content: draft.content,
@@ -123,18 +155,41 @@ function scheduleSave() {
   }, 900)
 }
 
-async function fixVersion() {
-  if (!canEdit.value) return
+async function startRoundEditing() {
+  await documentsStore.acquireEditLock(route.params.id, userStore.actor)
+  syncDraftFromStore()
+}
 
-  const summary = window.prompt('Кратко опишите, что изменилось в этой версии:')
-  if (!summary?.trim()) return
+async function releaseRoundLock() {
+  const confirmed = window.confirm(
+    'Выйти из редактирования без сохранения версии? Правки останутся в черновике.',
+  )
+  if (!confirmed) return
+  await documentsStore.releaseEditLock(route.params.id, userStore.actor)
+  syncDraftFromStore()
+}
+
+function handleEditModeClick() {
+  if (isRound.value && canTakeLock.value) {
+    startRoundEditing()
+    return
+  }
+  if (isRound.value && isActiveEditor.value) {
+    releaseRoundLock()
+  }
+}
+
+async function fixVersion() {
+  if (!canFixVersion.value) return
 
   clearTimeout(saveTimer.value)
-  await documentsStore.updateDraft(route.params.id, userStore.actor, {
-    title: draft.title,
-    content: draft.content,
-  })
-  await documentsStore.fixVersion(route.params.id, userStore.actor, { summary: summary.trim() })
+  if (isWritable.value) {
+    await documentsStore.updateDraft(route.params.id, userStore.actor, {
+      title: draft.title,
+      content: draft.content,
+    })
+  }
+  await documentsStore.fixVersion(route.params.id, userStore.actor, {})
   syncDraftFromStore()
   lastSavedTitle.value = draft.title
   lastSavedContent.value = draft.content
@@ -226,80 +281,94 @@ async function restoreVersion(versionId) {
     <div v-else-if="documentsStore.error" class="editor-state error">{{ documentsStore.error }}</div>
 
     <template v-else>
-      <div v-if="isCurrentActor" class="role-banner active-turn">
-        <template v-if="isHandoff">
-          Твой ход: правьте черновик. «Зафиксировать» публикует новую версию — ход остаётся у вас.
-        </template>
-        <template v-else>
-          Редактируете канонический черновик. Участники отправляют правки через submit.
-        </template>
-      </div>
-      <div v-else-if="canEditActorDraft" class="role-banner">
-        Личный черновик от v{{ headVersion?.number }}. Изменения попадут в документ только после отправки.
-      </div>
-      <div v-else class="role-banner waiting">
-        Сейчас не ваш ход. Можно комментировать и смотреть правки.
-      </div>
-
-      <div v-if="actorDraftMeta?.needsRebase" class="rebase-banner">
+      <div v-if="actorDraftMeta?.needsRebase" class="alert-banner">
         <span>Опубликована новая версия. Ваш черновик привязан к старому head.</span>
-        <button type="button" @click="rebaseActorDraft">Пересоздать от v{{ headVersion?.number }}</button>
+        <button type="button" class="secondary compact" @click="rebaseActorDraft">
+          Пересоздать от v{{ headVersion?.number }}
+        </button>
       </div>
 
       <div class="editor-workspace">
         <div class="editor-main">
-          <header class="editor-header">
-            <input
-              v-model="draft.title"
-              class="inline-title"
-              type="text"
-              placeholder="Без названия"
-              :readonly="workspaceMode === 'review' || (!canEdit && !canEditActorDraft)"
-            />
-            <div class="editor-actions">
-              <span class="version-badge">v{{ documentsStore.currentDocument?.headVersionNumber }}</span>
-              <span class="change-badge" :class="{ dirty: hasChangesSinceVersion }">
-                {{ hasChangesSinceVersion ? 'Есть изменения' : 'Актуально' }}
-              </span>
-              <div class="mode-switch">
-                <button
-                  type="button"
-                  :class="{ active: workspaceMode === 'edit' }"
-                  @click="workspaceMode = 'edit'"
-                >
+          <header class="editor-chrome">
+            <nav class="breadcrumb" aria-label="Путь к документу">
+              <span class="breadcrumb-muted">Документы</span>
+              <span class="breadcrumb-sep">/</span>
+              <span class="breadcrumb-current">{{ draft.title || 'Без названия' }}</span>
+            </nav>
+
+            <div class="chrome-actions">
+              <div v-if="showReviewMode" class="mode-switch">
+                <button type="button" :class="{ active: workspaceMode === 'edit' }" @click="workspaceMode = 'edit'">
                   Редактор
                 </button>
-                <button
-                  type="button"
-                  :class="{ active: workspaceMode === 'review' }"
-                  @click="workspaceMode = 'review'"
-                >
+                <button type="button" :class="{ active: workspaceMode === 'review' }" @click="workspaceMode = 'review'">
                   Правки
                 </button>
               </div>
+
               <button
-                v-if="canEdit"
+                v-if="canFixVersion"
                 type="button"
-                class="fix-btn"
+                class="compact save-btn"
+                :class="{ secondary: !hasChangesSinceVersion }"
                 :disabled="!hasChangesSinceVersion"
+                :title="
+                  hasChangesSinceVersion
+                    ? `Сохранить как v${(headVersion?.number ?? 0) + 1}`
+                    : 'Нет изменений для сохранения'
+                "
                 @click="fixVersion"
               >
-                Зафиксировать
+                Сохранить
               </button>
+
               <button
                 v-if="canEditActorDraft && workspaceMode === 'edit'"
                 type="button"
-                class="submit-btn"
+                class="secondary compact submit-btn"
                 :disabled="!hasUnsubmittedChanges || actorDraftMeta?.needsRebase"
                 @click="showSubmitForm = !showSubmitForm"
               >
-                Отправить правки
+                Отправить
               </button>
+
+              <button
+                v-if="isRound"
+                type="button"
+                class="icon-btn"
+                :class="{
+                  active: isActiveEditor,
+                  muted: !isWritable && !canTakeLock,
+                }"
+                :title="editModeTitle"
+                :disabled="!isWritable && !canTakeLock"
+                @click="handleEditModeClick"
+              >
+                <svg
+                  v-if="isWritable || canTakeLock"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M11.5 1.5a1.5 1.5 0 0 1 2.12 2.12L5.62 11.62 3 12.5l.88-2.62L11.5 1.5zM2 14.5V13h1.5L11.1 5.4l1.5 1.5L5 15H2v-.5z"
+                  />
+                </svg>
+                <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path
+                    d="M8 3C4.69 3 2 5.69 2 9s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm0 1.5c2.49 0 4.5 2.01 4.5 4.5S10.49 13.5 8 13.5 3.5 11.49 3.5 9 5.51 4.5 8 4.5zm0 2.25a.75.75 0 0 0-.75.75v2.25a.75.75 0 0 0 1.5 0V7.5A.75.75 0 0 0 8 7.75zM7.25 10.5a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0z"
+                  />
+                </svg>
+              </button>
+
               <button
                 type="button"
-                class="ribbon-btn sidebar-toggle"
+                class="icon-btn"
                 :class="{ active: rightOpen }"
-                title="Панель замечаний"
+                title="Замечания и история"
                 @click="toggleRight"
               >
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -323,6 +392,14 @@ async function restoreVersion(versionId) {
             </div>
           </form>
 
+          <input
+            v-model="draft.title"
+            class="inline-title"
+            type="text"
+            placeholder="Без названия"
+            :readonly="workspaceMode === 'review' || !isWritable"
+          />
+
           <div v-if="workspaceMode === 'edit'" class="tabbar editor-tabs">
             <button type="button" :class="{ active: mainTab === 'visual' }" @click="mainTab = 'visual'">
               Visual
@@ -330,10 +407,16 @@ async function restoreVersion(versionId) {
             <button type="button" :class="{ active: mainTab === 'markdown' }" @click="mainTab = 'markdown'">
               Markdown
             </button>
-            <span class="save-indicator">{{ saveStatus }}</span>
           </div>
 
-          <div class="editor-body">
+          <div class="editor-canvas" :class="{ 'is-readonly': !isWritable && workspaceMode === 'edit' }">
+            <div v-if="!isWritable && workspaceMode === 'edit' && readonlyHint" class="readonly-strip">
+              <span>{{ readonlyHint }}</span>
+              <button v-if="canTakeLock" type="button" class="secondary compact" @click="startRoundEditing">
+                Редактировать
+              </button>
+            </div>
+
             <ReviewPreview
               v-if="workspaceMode === 'review'"
               :head-title="headSnapshot?.title ?? ''"
@@ -345,13 +428,13 @@ async function restoreVersion(versionId) {
               <VisualEditor
                 v-if="mainTab === 'visual'"
                 v-model="draft.content"
-                :readonly="!canEdit && !canEditActorDraft"
+                :readonly="!isWritable"
                 @selection-change="handleSelection"
               />
               <MarkdownEditor
                 v-else
                 v-model="draft.content"
-                :readonly="!canEdit && !canEditActorDraft"
+                :readonly="!isWritable"
                 :selected-range="selectedRange"
                 @selection-change="handleSelection"
               />
@@ -388,7 +471,7 @@ async function restoreVersion(versionId) {
           <VersionPanel
             v-else
             :versions="documentsStore.versions"
-            :can-restore="canEdit"
+            :can-restore="isWritable || canTakeLock"
             @restore="restoreVersion"
           />
         </aside>
@@ -409,42 +492,23 @@ async function restoreVersion(versionId) {
   margin: 24px;
 }
 
-.role-banner {
-  background: rgba(127, 109, 242, 0.12);
-  border-bottom: 1px solid rgba(127, 109, 242, 0.3);
-  color: var(--interactive-accent-hover);
-  font-size: 13px;
-  padding: 8px 16px;
-}
-
-.role-banner.active-turn {
-  background: rgba(61, 214, 140, 0.1);
-  border-bottom-color: rgba(61, 214, 140, 0.25);
-  color: var(--color-green);
-}
-
-.role-banner.waiting {
-  background: var(--background-secondary);
-  border-bottom-color: var(--background-modifier-border);
-  color: var(--text-muted);
-}
-
-.rebase-banner {
+.alert-banner {
   align-items: center;
   background: rgba(255, 165, 0, 0.12);
   border-bottom: 1px solid rgba(255, 165, 0, 0.35);
+  color: var(--color-orange);
   display: flex;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: 12px;
   gap: 12px;
   justify-content: space-between;
-  padding: 8px 16px;
+  padding: 6px 16px;
 }
 
-.rebase-banner button {
+.compact {
   font-size: 12px;
-  margin: 0;
   min-height: 28px;
+  padding: 0 10px;
 }
 
 .editor-workspace {
@@ -461,54 +525,48 @@ async function restoreVersion(versionId) {
   min-width: 0;
 }
 
-.editor-header {
-  align-items: flex-start;
+.editor-chrome {
+  align-items: center;
   border-bottom: 1px solid var(--background-modifier-border);
   display: flex;
-  gap: 16px;
+  gap: 12px;
   justify-content: space-between;
-  padding: 20px 32px 12px;
+  min-height: 40px;
+  padding: 0 16px 0 24px;
 }
 
-.inline-title {
-  background: transparent;
-  border: 0;
-  color: var(--text-normal);
-  flex: 1;
-  font-size: 2em;
-  font-weight: 700;
-  line-height: 1.2;
-  min-width: 0;
-  outline: none;
-  padding: 0;
-}
-
-.inline-title::placeholder {
-  color: var(--text-faint);
-}
-
-.inline-title:read-only {
-  cursor: default;
-}
-
-.editor-actions {
+.breadcrumb {
   align-items: center;
+  color: var(--text-muted);
   display: flex;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding-top: 6px;
+  font-size: 12px;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.version-badge,
-.change-badge {
+.breadcrumb-muted {
   color: var(--text-faint);
-  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.breadcrumb-sep {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.breadcrumb-current {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.change-badge.dirty {
-  color: var(--color-orange);
+.chrome-actions {
+  align-items: center;
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
 }
 
 .mode-switch {
@@ -517,31 +575,85 @@ async function restoreVersion(versionId) {
 }
 
 .mode-switch button {
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
   font-size: 11px;
+  font-weight: 500;
   margin: 0;
   min-height: 28px;
   padding: 0 8px;
 }
 
-.mode-switch button.active {
+.mode-switch button:hover:not(:disabled) {
   background: var(--background-modifier-hover);
-  border-color: var(--interactive-accent);
-  color: var(--interactive-accent-hover);
+  color: var(--text-normal);
 }
 
-.fix-btn,
-.submit-btn {
-  font-size: 12px;
-  min-height: 28px;
-  padding: 0 10px;
+.mode-switch button.active {
+  background: var(--background-modifier-active);
+  border-color: var(--background-modifier-border);
+  color: var(--text-normal);
 }
 
 .submit-btn {
-  background: rgba(61, 214, 140, 0.2);
-  border-color: rgba(61, 214, 140, 0.45);
+  border: 1px solid rgba(61, 214, 140, 0.35);
   color: var(--color-green);
+}
+
+.save-btn:not(.secondary):not(:disabled) {
+  font-weight: 600;
+}
+
+.icon-btn {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-muted);
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  margin: 0;
+  min-height: 28px;
+  padding: 0;
+  width: 28px;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.icon-btn.active {
+  background: rgba(61, 214, 140, 0.15);
+  border-color: rgba(61, 214, 140, 0.35);
+  color: var(--color-green);
+}
+
+.icon-btn.muted {
+  opacity: 0.7;
+}
+
+.inline-title {
+  background: transparent;
+  border: 0;
+  color: var(--text-normal);
+  font-size: 2em;
+  font-weight: 700;
+  line-height: 1.2;
+  min-width: 0;
+  outline: none;
+  padding: 24px 32px 8px;
+  width: 100%;
+}
+
+.inline-title::placeholder {
+  color: var(--text-faint);
+}
+
+.inline-title:read-only {
+  cursor: default;
 }
 
 .submit-form {
@@ -579,20 +691,29 @@ async function restoreVersion(versionId) {
   color: var(--text-muted);
 }
 
-.sidebar-toggle {
-  margin-left: 4px;
+.editor-canvas {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.editor-tabs {
-  position: relative;
+.editor-canvas.is-readonly :deep(.markdown-input) {
+  cursor: default;
 }
 
-.save-indicator {
-  color: var(--text-faint);
-  font-size: 11px;
-  margin-left: auto;
-  padding-right: 8px;
-  white-space: nowrap;
+.readonly-strip {
+  align-items: center;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 6px 32px;
 }
 
 .editor-body {
@@ -620,17 +741,18 @@ async function restoreVersion(versionId) {
 }
 
 @media (max-width: 720px) {
-  .editor-header {
-    flex-direction: column;
-    padding: 16px;
+  .editor-chrome {
+    padding: 0 12px;
   }
 
-  .editor-actions {
-    padding-top: 0;
+  .inline-title {
+    padding: 16px 16px 8px;
   }
 
+  .readonly-strip,
   .submit-form {
-    padding: 12px 16px;
+    padding-left: 16px;
+    padding-right: 16px;
   }
 
   .sidebar-right:not(.collapsed) {

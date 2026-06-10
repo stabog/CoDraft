@@ -141,7 +141,7 @@ function setEditable(editable) {
 </script>
 
 <template>
-  <section class="visual-editor-shell">
+  <section class="visual-editor-shell" :class="{ 'is-readonly': readonly }">
     <EditorToolbar :editor="editor" :disabled="readonly" />
     <div class="visual-editor-scroll">
       <div ref="root" class="milkdown-editor"></div>
@@ -155,6 +155,14 @@ function setEditable(editable) {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+
+.visual-editor-shell.is-readonly :deep(.editor-toolbar) {
+  opacity: 0.45;
+}
+
+.visual-editor-shell.is-readonly :deep(.ProseMirror) {
+  cursor: default;
 }
 
 .visual-editor-scroll {

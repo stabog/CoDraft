@@ -1,10 +1,15 @@
 <script setup>
+import { computed, inject } from 'vue'
+import { useRoute } from 'vue-router'
 import FileExplorer from '../components/workspace/FileExplorer.vue'
 import { useSidebarState } from '../composables/useSidebarState'
 import { useUserStore } from '../stores/userStore'
 
+const route = useRoute()
 const userStore = useUserStore()
 const { open: leftOpen, toggle: toggleLeft } = useSidebarState('codraft-sidebar-left', true)
+const editorFooterStatus = inject('editorFooterStatus', null)
+const showDocumentStatus = computed(() => route.name === 'editor' && editorFooterStatus?.value)
 
 function onUserChange(event) {
   userStore.switchUser(event.target.value)
@@ -42,6 +47,13 @@ function onUserChange(event) {
         <span>CoDraft</span>
         <span class="status-dot">·</span>
         <span>{{ userStore.currentUser.name }}</span>
+      </div>
+      <div v-if="showDocumentStatus" class="status-bar-center">
+        <span>{{ editorFooterStatus.statusText }}</span>
+        <span class="status-dot">·</span>
+        <span>{{ editorFooterStatus.wordCount }} слов</span>
+        <span class="status-dot">·</span>
+        <span>{{ editorFooterStatus.charCount }} симв.</span>
       </div>
       <div class="status-bar-right">
         <label class="dev-user-field" for="dev-user-select">

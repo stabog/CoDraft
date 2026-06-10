@@ -269,10 +269,10 @@
 
 **Целевая модель:** `asyncWorkflow: round` по умолчанию ([ADR-015](#adr-015-round--базовый-async-подрежим)).
 
-**Реализовано:** `codraft.state.v3`, Edit/Comment, capabilities, `getEditorBundle`, ReviewPanel, actorDrafts.
+**Реализовано (round):** `codraft.state.v4`, shared draft, `activeEditorId` (захват/освобождение lock), `acquireEditLock` / `releaseEditLock`, `fixVersion` со сбросом lock, capabilities по workflow, миграция v3→v4.
 
-**Частично:** личный `actorDraft` (ближе к owner hub), autosave, `submitActorEdit`, режим «Правки», rebase-баннер; handoff-поля (`currentActorId`) без полной передачи хода.
+**Реализовано (owner hub):** демо-документ `owner_hub`, Edit/Comment, `actorDrafts`, autosave личного черновика, `submitActorEdit`, режим «Правки», rebase-баннер, ReviewPanel, apply/reject.
 
-**Не реализовано под round:** `activeEditorId`, shared draft как базовый режим, захват/освобождение lock, LLM tools по версиям, diff UI, HTTP-адаптер.
+**Не реализовано:** handoff (очередь, `currentActorId`, передача хода), LLM tools по версиям, diff UI, margin-комментарии, HTTP-адаптер, выбор workflow при создании в UI.
 
-**Расширения (опционально):** полный handoff (передача, reclaim, confirm); owner hub как явный выбор при создании.
+**Расширения (опционально):** полный handoff; явный выбор `owner_hub` при создании документа.
