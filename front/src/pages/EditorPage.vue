@@ -1,8 +1,9 @@
 <script setup>
+import { mdiClose, mdiDockRight, mdiLockClock, mdiPencil } from '@mdi/js'
 import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import MarkdownEditor from '../components/editor/MarkdownEditor.vue'
 import VisualEditor from '../components/editor/VisualEditor.vue'
+import MdiIcon from '../components/icons/MdiIcon.vue'
 import ReviewPanel from '../components/review/ReviewPanel.vue'
 import ReviewPreview from '../components/review/ReviewPreview.vue'
 import VersionPanel from '../components/history/VersionPanel.vue'
@@ -21,8 +22,8 @@ const draft = reactive({
   title: '',
   content: '',
 })
-const mainTab = ref('visual')
 const workspaceMode = ref('edit')
+const sourceOpen = ref(false)
 const sideTab = ref('review')
 const selectedRange = ref(null)
 const saveTimer = ref(null)
@@ -67,7 +68,8 @@ const hasUnsubmittedChanges = computed(() => {
   return hasChangesSinceVersion.value
 })
 
-const { wordCount, charCount, statusText, readonlyHint, editModeTitle } = useEditorDocumentStatus({
+const { wordCount, charCount, statusText, readonlyHint, editModeTitle, editModeLabel } =
+  useEditorDocumentStatus({
   draft,
   documentsStore,
   headVersion,
@@ -82,7 +84,15 @@ const { wordCount, charCount, statusText, readonlyHint, editModeTitle } = useEdi
   hasChangesSinceVersion,
   hasUnsubmittedChanges,
   activeEditor,
-})
+  })
+
+const showReadonlyStrip = computed(
+  () => !isWritable.value && workspaceMode.value === 'edit' && Boolean(readonlyHint.value),
+)
+
+const canEditTitle = computed(
+  () => workspaceMode.value === 'edit' && isWritable.value,
+)
 
 const footerStatus = computed(() => ({
   statusText: statusText.value,
@@ -92,20 +102,65 @@ const footerStatus = computed(() => ({
 
 provide('editorFooterStatus', footerStatus)
 
-onMounted(async () => {
-  await documentsStore.loadEditorBundle(route.params.id, userStore.actor)
+async function releaseLockForDocument(documentId) {
+  try {
+    await documentsStore.releaseEditLock(documentId, userStore.actor, { discardChanges: true })
+  } catch {
+    // lock already released
+  }
+}
+
+function resetWorkspaceUi() {
+  sourceOpen.value = false
+  workspaceMode.value = 'edit'
+  selectedRange.value = null
+  showSubmitForm.value = false
+  submitSummary.value = ''
+}
+
+async function openDocument(documentId) {
+  clearTimeout(saveTimer.value)
+  await documentsStore.loadEditorBundle(documentId, userStore.actor)
   syncDraftFromStore()
+}
+
+onMounted(async () => {
+  await openDocument(route.params.id)
   ready.value = true
 })
 
-onBeforeUnmount(() => {
+watch(
+  () => route.params.id,
+  async (nextId, prevId) => {
+    if (!prevId || nextId === prevId) return
+
+    const hadRoundLock =
+      ready.value && documentsStore.isRound && documentsStore.isActiveEditor
+
+    if (hadRoundLock) {
+      await releaseLockForDocument(prevId)
+    }
+
+    resetWorkspaceUi()
+    await openDocument(nextId)
+  },
+)
+
+onBeforeUnmount(async () => {
   clearTimeout(saveTimer.value)
+  if (!ready.value || !isRound.value || !isActiveEditor.value) return
+
+  await releaseLockForDocument(route.params.id)
 })
 
 watch(
   () => [draft.title, draft.content],
   () => scheduleSave(),
 )
+
+watch(workspaceMode, (mode) => {
+  if (mode === 'review') sourceOpen.value = false
+})
 
 function syncDraftFromStore() {
   const doc = documentsStore.currentDocument
@@ -161,22 +216,21 @@ async function startRoundEditing() {
 }
 
 async function releaseRoundLock() {
-  const confirmed = window.confirm(
-    'Выйти из редактирования без сохранения версии? Правки останутся в черновике.',
-  )
-  if (!confirmed) return
-  await documentsStore.releaseEditLock(route.params.id, userStore.actor)
-  syncDraftFromStore()
-}
-
-function handleEditModeClick() {
-  if (isRound.value && canTakeLock.value) {
-    startRoundEditing()
+  if (!hasChangesSinceVersion.value) {
+    await documentsStore.releaseEditLock(route.params.id, userStore.actor, { discardChanges: true })
+    syncDraftFromStore()
+    sourceOpen.value = false
     return
   }
-  if (isRound.value && isActiveEditor.value) {
-    releaseRoundLock()
-  }
+
+  const confirmed = window.confirm(
+    'Отменить правки? Несохранённые изменения будут потеряны, документ останется на текущей версии.',
+  )
+  if (!confirmed) return
+
+  await documentsStore.releaseEditLock(route.params.id, userStore.actor, { discardChanges: true })
+  syncDraftFromStore()
+  sourceOpen.value = false
 }
 
 async function fixVersion() {
@@ -270,7 +324,7 @@ async function restoreVersion(versionId) {
   await documentsStore.restoreVersionToDraft(route.params.id, versionId, userStore.actor)
   syncDraftFromStore()
   workspaceMode.value = 'edit'
-  mainTab.value = 'visual'
+  sourceOpen.value = false
   await nextTick()
 }
 </script>
@@ -294,7 +348,14 @@ async function restoreVersion(versionId) {
             <nav class="breadcrumb" aria-label="Путь к документу">
               <span class="breadcrumb-muted">Документы</span>
               <span class="breadcrumb-sep">/</span>
-              <span class="breadcrumb-current">{{ draft.title || 'Без названия' }}</span>
+              <input
+                v-model="draft.title"
+                class="breadcrumb-title-input"
+                type="text"
+                placeholder="Без названия"
+                :readonly="!canEditTitle"
+                aria-label="Название документа"
+              />
             </nav>
 
             <div class="chrome-actions">
@@ -334,34 +395,36 @@ async function restoreVersion(versionId) {
               </button>
 
               <button
-                v-if="isRound"
+                v-if="isRound && canTakeLock"
                 type="button"
-                class="icon-btn"
-                :class="{
-                  active: isActiveEditor,
-                  muted: !isWritable && !canTakeLock,
-                }"
+                class="mode-btn"
                 :title="editModeTitle"
-                :disabled="!isWritable && !canTakeLock"
-                @click="handleEditModeClick"
+                @click="startRoundEditing"
               >
-                <svg
-                  v-if="isWritable || canTakeLock"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 16 16"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M11.5 1.5a1.5 1.5 0 0 1 2.12 2.12L5.62 11.62 3 12.5l.88-2.62L11.5 1.5zM2 14.5V13h1.5L11.1 5.4l1.5 1.5L5 15H2v-.5z"
-                  />
-                </svg>
-                <svg v-else width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                  <path
-                    d="M8 3C4.69 3 2 5.69 2 9s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6zm0 1.5c2.49 0 4.5 2.01 4.5 4.5S10.49 13.5 8 13.5 3.5 11.49 3.5 9 5.51 4.5 8 4.5zm0 2.25a.75.75 0 0 0-.75.75v2.25a.75.75 0 0 0 1.5 0V7.5A.75.75 0 0 0 8 7.75zM7.25 10.5a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0z"
-                  />
-                </svg>
+                <MdiIcon :path="mdiPencil" :size="14" />
+                <span>{{ editModeLabel }}</span>
+              </button>
+
+              <button
+                v-else-if="isRound && isActiveEditor"
+                type="button"
+                class="mode-btn mode-btn-cancel"
+                :title="editModeTitle"
+                @click="releaseRoundLock"
+              >
+                <MdiIcon :path="mdiClose" :size="14" />
+                <span>{{ editModeLabel }}</span>
+              </button>
+
+              <button
+                v-else-if="isRound && activeEditor"
+                type="button"
+                class="mode-btn muted"
+                :title="editModeTitle"
+                disabled
+              >
+                <MdiIcon :path="mdiLockClock" :size="14" />
+                <span>{{ editModeLabel }}</span>
               </button>
 
               <button
@@ -371,9 +434,7 @@ async function restoreVersion(versionId) {
                 title="Замечания и история"
                 @click="toggleRight"
               >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-                  <path d="M2 2.5A.5.5 0 0 1 2.5 2h11a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-11zM3 3v10h4.5V3H3zm5.5 0V13H13V3H8.5z" />
-                </svg>
+                <MdiIcon :path="mdiDockRight" />
               </button>
             </div>
           </header>
@@ -392,29 +453,9 @@ async function restoreVersion(versionId) {
             </div>
           </form>
 
-          <input
-            v-model="draft.title"
-            class="inline-title"
-            type="text"
-            placeholder="Без названия"
-            :readonly="workspaceMode === 'review' || !isWritable"
-          />
-
-          <div v-if="workspaceMode === 'edit'" class="tabbar editor-tabs">
-            <button type="button" :class="{ active: mainTab === 'visual' }" @click="mainTab = 'visual'">
-              Visual
-            </button>
-            <button type="button" :class="{ active: mainTab === 'markdown' }" @click="mainTab = 'markdown'">
-              Markdown
-            </button>
-          </div>
-
           <div class="editor-canvas" :class="{ 'is-readonly': !isWritable && workspaceMode === 'edit' }">
-            <div v-if="!isWritable && workspaceMode === 'edit' && readonlyHint" class="readonly-strip">
+            <div v-if="showReadonlyStrip" class="readonly-strip">
               <span>{{ readonlyHint }}</span>
-              <button v-if="canTakeLock" type="button" class="secondary compact" @click="startRoundEditing">
-                Редактировать
-              </button>
             </div>
 
             <ReviewPreview
@@ -424,21 +465,14 @@ async function restoreVersion(versionId) {
               :head-version-number="headVersion?.number ?? 0"
               :edits="documentsStore.edits"
             />
-            <template v-else>
-              <VisualEditor
-                v-if="mainTab === 'visual'"
-                v-model="draft.content"
-                :readonly="!isWritable"
-                @selection-change="handleSelection"
-              />
-              <MarkdownEditor
-                v-else
-                v-model="draft.content"
-                :readonly="!isWritable"
-                :selected-range="selectedRange"
-                @selection-change="handleSelection"
-              />
-            </template>
+            <VisualEditor
+              v-else
+              v-model="draft.content"
+              v-model:source-open="sourceOpen"
+              :document-title="draft.title"
+              :readonly="!isWritable"
+              @selection-change="handleSelection"
+            />
           </div>
         </div>
 
@@ -555,11 +589,34 @@ async function restoreVersion(versionId) {
   flex-shrink: 0;
 }
 
-.breadcrumb-current {
+.breadcrumb-title-input {
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  color: var(--text-normal);
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+  min-width: 120px;
+  outline: none;
+  padding: 2px 6px;
+}
+
+.breadcrumb-title-input::placeholder {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+.breadcrumb-title-input:not(:read-only):hover,
+.breadcrumb-title-input:not(:read-only):focus {
+  background: var(--background-modifier-hover);
+}
+
+.breadcrumb-title-input:read-only {
   color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  cursor: default;
+  font-weight: 500;
 }
 
 .chrome-actions {
@@ -635,25 +692,44 @@ async function restoreVersion(versionId) {
   opacity: 0.7;
 }
 
-.inline-title {
+.mode-btn {
+  align-items: center;
   background: transparent;
-  border: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 500;
+  gap: 6px;
+  margin: 0;
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+.mode-btn:hover:not(:disabled) {
+  background: var(--background-modifier-hover);
   color: var(--text-normal);
-  font-size: 2em;
-  font-weight: 700;
-  line-height: 1.2;
-  min-width: 0;
-  outline: none;
-  padding: 24px 32px 8px;
-  width: 100%;
 }
 
-.inline-title::placeholder {
-  color: var(--text-faint);
+.mode-btn-cancel {
+  border-color: var(--background-modifier-border);
+  color: var(--text-muted);
 }
 
-.inline-title:read-only {
+.mode-btn-cancel:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.mode-btn.muted:disabled {
   cursor: default;
+  opacity: 0.85;
+}
+
+.mode-btn-mono {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
 }
 
 .submit-form {
@@ -743,10 +819,6 @@ async function restoreVersion(versionId) {
 @media (max-width: 720px) {
   .editor-chrome {
     padding: 0 12px;
-  }
-
-  .inline-title {
-    padding: 16px 16px 8px;
   }
 
   .readonly-strip,

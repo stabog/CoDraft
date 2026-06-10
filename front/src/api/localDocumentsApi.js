@@ -592,11 +592,13 @@ export const localDocumentsApi = {
       throw apiError('VALIDATION', 'Edit lock is only used in round workflow')
     }
     ensureRoundEditLock(document, actor)
+    const head = getHeadVersion(state, document)
+    syncDraftToHead(document, head, actor)
     writeState(state)
     return clone(toDocumentDetail(document, state, actor))
   },
 
-  async releaseEditLock(documentId, actor) {
+  async releaseEditLock(documentId, actor, input = {}) {
     const state = readState()
     const document = getDocumentRecord(state, documentId)
     if (!isRoundWorkflow(document)) {
@@ -605,6 +607,11 @@ export const localDocumentsApi = {
     const lockUserId = getActiveEditorUserId(document)
     if (!lockUserId || lockUserId !== actor.id) {
       throw apiError('FORBIDDEN', 'You do not hold the edit lock')
+    }
+    const discardChanges = input.discardChanges !== false
+    if (discardChanges) {
+      const head = getHeadVersion(state, document)
+      syncDraftToHead(document, head, actor)
     }
     document.activeEditorId = null
     writeState(state)

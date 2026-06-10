@@ -33,7 +33,7 @@ export function useEditorDocumentStatus({
     if (isRound.value) {
       if (isActiveEditor.value) {
         if (hasChangesSinceVersion.value) {
-          return `v${v} · редактируете · готово к v${v + 1}`
+          return `v${v} · редактируете · можно сохранить v${v + 1}`
         }
         return `v${v} · редактируете`
       }
@@ -58,9 +58,7 @@ export function useEditorDocumentStatus({
   const readonlyHint = computed(() => {
     if (isWritable.value) return ''
 
-    if (isRound.value && canTakeLock.value) {
-      return 'Нажмите «Редактировать» или выделите текст для комментария.'
-    }
+    if (isRound.value && canTakeLock.value) return ''
     if (isRound.value && activeEditor.value) {
       return `${activeEditor.value.name} редактирует. Вы можете комментировать выделенный фрагмент.`
     }
@@ -71,11 +69,19 @@ export function useEditorDocumentStatus({
   })
 
   const editModeTitle = computed(() => {
-    if (isRound.value && canTakeLock.value) return 'Редактировать'
-    if (isRound.value && isActiveEditor.value) return 'Выйти без сохранения версии'
+    if (isRound.value && canTakeLock.value) return 'Начать редактирование'
+    if (isRound.value && isActiveEditor.value) {
+      return 'Отменить правки и вернуться к опубликованной версии'
+    }
     if (isRound.value && activeEditor.value) return `Правит ${activeEditor.value.name}`
-    if (isWritable.value) return 'Режим редактирования'
     return 'Режим просмотра'
+  })
+
+  const editModeLabel = computed(() => {
+    if (isRound.value && canTakeLock.value) return 'Редактировать'
+    if (isRound.value && isActiveEditor.value) return 'Отменить'
+    if (isRound.value && activeEditor.value) return 'Только просмотр'
+    return 'Редактировать'
   })
 
   return {
@@ -84,5 +90,6 @@ export function useEditorDocumentStatus({
     statusText,
     readonlyHint,
     editModeTitle,
+    editModeLabel,
   }
 }

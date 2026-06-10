@@ -1,6 +1,8 @@
 <script setup>
+import { mdiFolderOutline } from '@mdi/js'
 import { computed, inject } from 'vue'
 import { useRoute } from 'vue-router'
+import MdiIcon from '../components/icons/MdiIcon.vue'
 import FileExplorer from '../components/workspace/FileExplorer.vue'
 import { useSidebarState } from '../composables/useSidebarState'
 import { useUserStore } from '../stores/userStore'
@@ -27,9 +29,7 @@ function onUserChange(event) {
           title="Файлы"
           @click="toggleLeft"
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9zM3.5 3a.5.5 0 0 0-.5.5V6h11V3.5a.5.5 0 0 0-.5-.5h-9zM3 7v5.5a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5V7H3z" />
-          </svg>
+          <MdiIcon :path="mdiFolderOutline" />
         </button>
       </nav>
 

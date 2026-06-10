@@ -7,25 +7,44 @@ import { commonmark } from '@milkdown/preset-commonmark'
 import { gfm } from '@milkdown/preset-gfm'
 import { nord } from '@milkdown/theme-nord'
 import { getMarkdown } from '@milkdown/utils'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { fromEditorMarkdown, toEditorMarkdown } from '../../utils/markdownLineBreaks'
 import EditorToolbar from './EditorToolbar.vue'
 
 const model = defineModel({ type: String, default: '' })
+const sourceOpen = defineModel('sourceOpen', { type: Boolean, default: false })
+
 const props = defineProps({
   readonly: {
     type: Boolean,
     default: false,
   },
+  documentTitle: {
+    type: String,
+    default: '',
+  },
 })
+
 const emit = defineEmits(['selection-change'])
 
 const root = ref(null)
+const sourceInput = ref(null)
 const editor = ref(null)
 const applyingExternalChange = ref(false)
 const lastEditorMarkdown = ref('')
 
+const showFormatting = computed(() => !props.readonly && !sourceOpen.value)
+
+const copyText = computed(() => {
+  const title = props.documentTitle?.trim()
+  const content = model.value || ''
+  if (!title) return content
+  if (!content) return `# ${title}`
+  return `# ${title}\n\n${content}`
+})
+
 function readEditorMarkdown() {
-  if (!editor.value) return ''
+  if (!editor.value) return model.value || ''
   let markdown = ''
   editor.value.action((ctx) => {
     markdown = getMarkdown()(ctx)
@@ -34,10 +53,11 @@ function readEditorMarkdown() {
 }
 
 function shouldSkipExternalSync(markdown) {
-  if (markdown === lastEditorMarkdown.value) return true
+  const editorMarkdown = toEditorMarkdown(markdown)
+  if (editorMarkdown === lastEditorMarkdown.value) return true
   const current = readEditorMarkdown()
-  if (current === markdown) {
-    lastEditorMarkdown.value = markdown
+  if (current === editorMarkdown) {
+    lastEditorMarkdown.value = editorMarkdown
     return true
   }
   return false
@@ -46,21 +66,61 @@ function shouldSkipExternalSync(markdown) {
 function applyMarkdown(markdown) {
   if (!editor.value) return
 
+  const editorMarkdown = toEditorMarkdown(markdown || '')
+
   editor.value.action((ctx) => {
     const view = ctx.get(editorViewCtx)
     const parser = ctx.get(parserCtx)
-    const doc = parser(markdown || '')
+    const doc = parser(editorMarkdown)
     if (!doc || view.state.doc.eq(doc)) {
-      lastEditorMarkdown.value = markdown
+      lastEditorMarkdown.value = editorMarkdown
       return
     }
 
     applyingExternalChange.value = true
     view.dispatch(view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content))
-    lastEditorMarkdown.value = markdown
+    lastEditorMarkdown.value = editorMarkdown
     queueMicrotask(() => {
       applyingExternalChange.value = false
     })
+  })
+}
+
+function openSource() {
+  const markdown = fromEditorMarkdown(readEditorMarkdown())
+  if (markdown !== model.value) {
+    model.value = markdown
+  }
+  sourceOpen.value = true
+  emit('selection-change', null)
+}
+
+function toggleSource() {
+  if (sourceOpen.value) {
+    sourceOpen.value = false
+    return
+  }
+  openSource()
+}
+
+function updateSourceSelection() {
+  const element = sourceInput.value
+  if (!element) return
+
+  const anchorFrom = element.selectionStart
+  const anchorTo = element.selectionEnd
+  const anchorText = model.value.slice(anchorFrom, anchorTo)
+
+  if (!anchorText.trim()) {
+    emit('selection-change', null)
+    return
+  }
+
+  emit('selection-change', {
+    anchorFrom,
+    anchorTo,
+    anchorText,
+    text: anchorText,
   })
 }
 
@@ -68,17 +128,20 @@ onMounted(async () => {
   editor.value = await Editor.make()
     .config((ctx) => {
       ctx.set(rootCtx, root.value)
-      ctx.set(defaultValueCtx, model.value || '')
+      ctx.set(defaultValueCtx, toEditorMarkdown(model.value || ''))
       ctx
         .get(listenerCtx)
         .markdownUpdated((_, markdown) => {
-          if (applyingExternalChange.value) return
-          lastEditorMarkdown.value = markdown
-          if (markdown !== model.value) {
-            model.value = markdown
+          if (applyingExternalChange.value || sourceOpen.value) return
+          const normalized = fromEditorMarkdown(markdown)
+          lastEditorMarkdown.value = toEditorMarkdown(normalized)
+          if (normalized !== model.value) {
+            model.value = normalized
           }
         })
         .selectionUpdated((_, selection) => {
+          if (sourceOpen.value) return
+
           const slice = selection.content().content
           const selectedText = slice.textBetween(0, slice.size, '\n')
           const anchorText = selectedText.trim()
@@ -105,9 +168,8 @@ onMounted(async () => {
     .use(listener)
     .create()
 
-  lastEditorMarkdown.value = model.value || ''
   applyMarkdown(model.value)
-  lastEditorMarkdown.value = readEditorMarkdown() || model.value || ''
+  lastEditorMarkdown.value = readEditorMarkdown() || toEditorMarkdown(model.value || '')
   setEditable(!props.readonly)
 })
 
@@ -120,7 +182,7 @@ onBeforeUnmount(async () => {
 watch(
   () => model.value,
   (markdown) => {
-    if (!editor.value || applyingExternalChange.value) return
+    if (!editor.value || applyingExternalChange.value || sourceOpen.value) return
     if (shouldSkipExternalSync(markdown)) return
     applyMarkdown(markdown)
   },
@@ -130,6 +192,22 @@ watch(
   () => props.readonly,
   (value) => setEditable(!value),
 )
+
+watch(sourceOpen, (open, wasOpen) => {
+  if (open === wasOpen) return
+
+  if (open) {
+    const markdown = fromEditorMarkdown(readEditorMarkdown())
+    if (markdown !== model.value) {
+      model.value = markdown
+    }
+    emit('selection-change', null)
+    return
+  }
+
+  applyMarkdown(model.value)
+  lastEditorMarkdown.value = toEditorMarkdown(model.value)
+})
 
 function setEditable(editable) {
   if (!editor.value) return
@@ -141,9 +219,29 @@ function setEditable(editable) {
 </script>
 
 <template>
-  <section class="visual-editor-shell" :class="{ 'is-readonly': readonly }">
-    <EditorToolbar :editor="editor" :disabled="readonly" />
-    <div class="visual-editor-scroll">
+  <section class="visual-editor-shell" :class="{ 'is-readonly': readonly, 'is-source': sourceOpen }">
+    <EditorToolbar
+      :editor="editor"
+      :source-open="sourceOpen"
+      :show-formatting="showFormatting"
+      :copy-text="copyText"
+      @toggle-source="toggleSource"
+    />
+
+    <div v-if="sourceOpen" class="editor-content-scroll">
+      <textarea
+        ref="sourceInput"
+        v-model="model"
+        class="source-input"
+        spellcheck="false"
+        :readonly="readonly"
+        @mouseup="updateSourceSelection"
+        @keyup="updateSourceSelection"
+        @select="updateSourceSelection"
+      />
+    </div>
+
+    <div v-show="!sourceOpen" class="editor-content-scroll">
       <div ref="root" class="milkdown-editor"></div>
     </div>
   </section>
@@ -157,24 +255,40 @@ function setEditable(editable) {
   min-height: 0;
 }
 
-.visual-editor-shell.is-readonly :deep(.editor-toolbar) {
-  opacity: 0.45;
-}
-
 .visual-editor-shell.is-readonly :deep(.ProseMirror) {
   cursor: default;
 }
 
-.visual-editor-scroll {
+.editor-content-scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 8px 32px 32px;
 }
 
+.source-input,
 .milkdown-editor {
+  display: block;
   margin: 0 auto;
   max-width: 720px;
+  width: 100%;
+}
+
+.source-input {
+  background: transparent;
+  border: 0;
+  color: var(--text-normal);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 16px;
+  line-height: 1.72;
+  min-height: 100%;
+  outline: none;
+  padding: 0;
+  resize: none;
+}
+
+.source-input:read-only {
+  cursor: default;
 }
 
 .milkdown-editor :deep(.milkdown) {
@@ -258,7 +372,7 @@ function setEditable(editable) {
 }
 
 @media (max-width: 720px) {
-  .visual-editor-scroll {
+  .editor-content-scroll {
     padding: 8px 16px 24px;
   }
 }

@@ -140,7 +140,7 @@
 | Метод | Описание |
 |-------|----------|
 | `updateDraft(documentId, actor, { title?, content? })` | Round: захват `activeEditorId` при `null`; правки только при своём lock. `CONFLICT`, если lock у другого |
-| `releaseEditLock(documentId, actor)` | Опционально: сброс lock без fixVersion (отмена раунда) |
+| `releaseEditLock(documentId, actor, { discardChanges? })` | Сброс lock; по умолчанию `discardChanges: true` — черновик = head |
 
 ### Draft (owner hub)
 

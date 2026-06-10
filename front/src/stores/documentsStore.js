@@ -83,8 +83,8 @@ export const useDocumentsStore = defineStore('documents', {
       this.currentDocument = await documentsApi.acquireEditLock(documentId, actor)
     },
 
-    async releaseEditLock(documentId, actor) {
-      this.currentDocument = await documentsApi.releaseEditLock(documentId, actor)
+    async releaseEditLock(documentId, actor, payload = {}) {
+      this.currentDocument = await documentsApi.releaseEditLock(documentId, actor, payload)
     },
 
     async updateActorDraft(documentId, actor, payload) {

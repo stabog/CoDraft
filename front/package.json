@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@mdi/js": "^7.4.47",
     "@milkdown/core": "^7.21.2",
     "@milkdown/ctx": "^7.21.2",
     "@milkdown/plugin-clipboard": "^7.21.2",
