@@ -1,7 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 
-defineProps({
+const props = defineProps({
   comments: {
     type: Array,
     default: () => [],
@@ -32,7 +32,7 @@ function submitReply(commentId) {
 
   emit('add-reply', commentId, {
     body,
-    authorName,
+    authorName: props.authorName,
   })
   replies.value[commentId] = ''
 }
