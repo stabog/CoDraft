@@ -272,7 +272,8 @@ export function createDemoDocumentState() {
     createdBy: author,
     ownerId: anna.id,
     collaborationMode: 'async',
-    asyncWorkflow: 'owner_hub',
+    asyncWorkflow: 'handoff',
+    currentActorId: anna.id,
     headVersionId: DEMO_VERSION_ID,
     draft: {
       title: DEMO_TITLE,

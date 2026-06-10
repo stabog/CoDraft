@@ -44,13 +44,13 @@
 
 ---
 
-## ADR-005: Два async-подрежима — handoff и owner hub
+## ADR-005: Async-подрежимы — round, handoff, owner hub
 
-**Контекст:** Разные сценарии: пинг-понг двоих vs автор + много ревьюеров.
+**Контекст:** Разные сценарии: один редактор и версии по раундам vs пинг-понг двоих vs автор + много ревьюеров.
 
-**Решение:** `asyncWorkflow: handoff | owner_hub`. Open (DAG) в MVP не выделяем.
+**Решение:** `asyncWorkflow: round | handoff | owner_hub`. По умолчанию — **`round`** ([ADR-015](#adr-015-round--базовый-async-подрежим)). Open (DAG) в MVP не выделяем.
 
-**Последствия:** Два workflow-сервиса поверх общей доменной модели.
+**Последствия:** Общая основа round; handoff и owner hub — расширения поверх неё.
 
 ---
 
@@ -80,7 +80,7 @@
 
 **Решение:** MVP без ролей; в API предусмотреть `canEdit` / `canComment` с сервера.
 
-**Последствия:** Owner hub и handoff задают права implicitly.
+**Последствия:** Round, handoff и owner hub задают права через `capabilities`.
 
 ---
 
@@ -99,25 +99,155 @@
 
 ---
 
-## ADR-009: Owner hub — первый реализуемый async-подрежим
+## ADR-009: Owner hub — первый реализуемый async-подрежим (прототип)
+
+> **Историческое.** Продуктовая модель после [ADR-015](#adr-015-round--базовый-async-подрежим): базовый режим — **round**; handoff и owner hub — расширения. Ниже — порядок ранней реализации в прототипе.
 
 **Контекст:** Два подрежима (handoff и owner hub) описаны в модели; в коде нужно начать с одного, чтобы не размывать MVP.
 
-**Решение:** Первый вертикальный срез в прототипе — **owner hub**:
+**Решение:** Первый вертикальный срез в **прототипе** `front/` — **owner hub**:
 
 - создатель документа = `ownerId`;
 - только owner редактирует draft и фиксирует canonical-версии;
-- остальные участники комментируют версии и отправляют **proposals**;
+- остальные участники комментируют версии и отправляют **proposals** (`Edit`);
 - owner сливает proposals в draft вручную, diff `head ↔ proposal` и `parent → child`;
 - `asyncWorkflow` по умолчанию `owner_hub`; выбор при создании документа — позже.
 
-**Handoff** — второй срез после стабилизации owner hub (общая модель версий и комментариев уже будет в коде).
+**Handoff** — следующий срез в коде после стабилизации общей модели ([ADR-013](#adr-013-handoff-для-пересылки-owner-hub-для-арбитража)).
+
+**Уточнение (2025):** продуктовый приоритет для сценария «пересылка документов» — **handoff**; owner hub в продукте — прежде всего **арбитраж при конфликтах** ([ADR-013](#adr-013-handoff-для-пересылки-owner-hub-для-арбитража)). ADR-009 описывает порядок **реализации в прототипе**, не финальную продуктовую иерархию.
 
 **Последствия:**
 
-- В прототипе сначала: proposals, панель входящих, `canEdit` / `canComment`, `incorporatedProposalIds` при фиксации.
+- В прототипе сначала: proposals, панель входящих, `canEdit` / `canComment`, `incorporatedEditIds` при фиксации.
 - Поля `currentActorId`, `handoff` на версии — в модели данных можно заложить, но UI и логика handoff не в первом срезе.
 - Новые документы в демо создаются как owner hub, пока нет переключателя подрежимов.
+
+---
+
+## ADR-011: Head, draft и submit
+
+**Контекст:** Термин «draft» смешивал каноническую рабочую копию и личный черновик участника. Правки к тексту на md ломают якоря при параллельной работе. Нужна ясная модель «оригинал + рабочая копия».
+
+**Решение:**
+
+- **head** — принятая зафиксированная версия (immutable снимок vN).
+- **Автосейв draft** сохраняет незавершённую работу раунда; **не меняет head**.
+- **`fixVersion`** — конец раунда: снимок draft → новая версия, head обновляется ([ADR-015](#adr-015-round--базовый-async-подрежим)).
+
+**По подрежимам:**
+
+| Подрежим | Draft |
+|----------|--------|
+| **round** (базовый) | Один **shared draft** на документ; эксклюзив через `activeEditorId` |
+| **handoff** (расширение) | Личный fork от head на актора с ходом; очередь через `currentActorId` |
+| **owner_hub** (расширение) | Owner правит свой draft; участники — личные fork'и + **submit** → `Edit` |
+
+- **submit** (`submitEdit` / `submitActorEdit`) — в **owner hub**: diff fork → `Edit`, owner мержит в канон. В **round** и **handoff** слой Edit не обязателен — правки идут через draft → `fixVersion`.
+- **Effective content** (чтение, в т.ч. LLM): draft, если есть незафиксированные изменения; иначе head.
+
+**Незасабмиченные изменения (owner hub):**
+
+- Не попадают в head.
+- **Не блокируют** публикацию owner'а (gate только по **submitted**).
+- При смене head fork с устаревшим `baseVersionId` → **needs rebase**; уведомление.
+- В handoff при передаче хода без submit — **confirm-диалог**, без жёсткой блокировки.
+
+**Последствия:**
+
+- Round — один `document.draft`; owner hub — `actorDrafts[]` per участник ([ADR-014](#adr-014-видимость-draft-и-публикация)).
+- ADR-003 сохраняется для head.
+
+---
+
+## ADR-012: Редактор и просмотр правок (async MVP на md)
+
+**Контекст:** Наложение правок в том же editable view, что и ввод, даёт рассинхрон координат (рендер ≠ модель). Inline track changes в Milkdown — отдельный большой срез. JSON doc полезен для live, не для первого async MVP.
+
+**Решение:**
+
+- **Async MVP:** canonical content — **markdown**; structured JSON doc — для `collaborationMode: live` ([ADR-001](#adr-001-async-и-live--отдельные-режимы)), не для текущего MVP.
+- **Редактор** всегда правит **один working-текст** (личный draft / fork от head). Не composite «база + чужие вставки в потоке».
+- **Режим просмотра правок** — отдельно, **read-only**: head + overlay pending `Edit` (decorations / diff). Apply / reject — из панели или merge UI, не из preview-редактора.
+- **Round:** один shared draft; эксклюзив через `activeEditorId` ([ADR-015](#adr-015-round--базовый-async-подрежим)).
+- **Handoff / owner hub:** `base = head`, `working = fork`; submit строит diff (+ summary) в owner hub.
+- Owner hub: owner правит **свой** draft; чужие изменения — через submitted `Edit`.
+- **Edit** якорится к `baseVersionId` (head); смена **чужого** draft owner'ом не сдвигает якоря в storage. Ломается только **применимость к текущему draft** → поиск по `quotedText` + контекст, статус `draft_apply_ok | conflict | stale`.
+- Основной сценарий правки — **range** (`scope: range`); **document** — через diff целиком.
+
+**Последствия:**
+
+- Diff UI и review mode — приоритет после базового submit.
+- Якоря: эволюция от `{ from, to, quotedText }` к добавлению `contextBefore` / `contextAfter`; не переход на JSON в storage.
+
+---
+
+## ADR-013: Handoff и owner hub как расширения round
+
+**Контекст:** Базовый [round](#adr-015-round--базовый-async-подрежим) покрывает «один редактор, версия по фиксации». Нужны опции для пересылки по очереди и параллельного ревью.
+
+**Решение:**
+
+| Ситуация | Подрежим |
+|----------|----------|
+| Редактирование по раундам, память LLM, соавторы без очереди | **round** (по умолчанию) |
+| Два участника, явная очередь, «мяч у тебя», передача конкретному | **handoff** — расширение round |
+| Три и более участника, или **несовместимые** submit'ы к одному head | **owner_hub** — расширение round; арбитраж |
+| Несколько submit'ов, все **совместимы** | Auto-merge hunks без полноценного hub UI |
+
+- **Handoff** добавляет к round: `currentActorId`, передачу хода при `fixVersion`, личный fork, reclaim, confirm.
+- **Owner hub** добавляет к round: личные fork'и, слой `Edit`, owner-only фиксация канона после merge.
+
+**Последствия:**
+
+- Новые документы по умолчанию — `round`; handoff и owner_hub — опция при создании.
+- Прототип `front/` опережал модель (hub/handoff); целевое выравнивание — round ([расхождение](#расхождение-с-прототипом-front)).
+
+---
+
+## ADR-015: Round — базовый async-подрежим
+
+**Контекст:** Нужен простой режим работы с документом: один писатель за раз, канон по фиксации, история версий. Типичный сценарий — документ как **память для LLM**: агент правит в раунде, пользователь вносит коррективы когда нужно, без явной «передачи хода». Handoff и owner hub решают более сложную коллаборацию.
+
+**Решение:**
+
+- **`asyncWorkflow: round`** — подрежим по умолчанию при создании документа.
+- **Раунд** — период от начала правок до `fixVersion`. Между раундами документ **открыт**: следующий раунд может начать **любой** участник, в том числе тот же.
+- **Один shared draft** на документ (не fork per actor).
+- **`activeEditorId: UserRef | null`** — эксклюзив на запись. `null` между раундами. Пользователь начинает править — lock переходит к нему; LLM не пишет параллельно. Приоритет у человека при конфликте.
+- **`fixVersion`** завершает раунд: снимок draft → vN+1, `activeEditorId = null`, draft синхронизируется с новым head.
+- **Чтение (UI, LLM):** *effective content* = draft, если `draft ≠ head`; иначе head. История — `listVersions` / `getVersion` (отдельные tools, не в каждом вызове).
+- Слой **Edit** в round **не используется** — правки напрямую через draft → `fixVersion`.
+- **Комментарии** к версиям — как в [ADR-004](#adr-004-комментарии-привязаны-к-версии).
+
+**Handoff и owner hub** — опциональные расширения поверх round ([ADR-013](#adr-013-handoff-и-owner-hub-как-расширения-round)); не смешивать семантику очереди/арбитража в базовый round.
+
+**Последствия:**
+
+- API: `updateDraft` только при `activeEditorId === actor` или `activeEditorId === null` (захват lock при первой правке).
+- UI: между раундами — «документ готов к правкам»; во время раунда — индикатор активного редактора.
+- LLM-интеграция: write при своём lock; read — effective content + опционально версии по tool.
+
+---
+
+## ADR-014: Видимость draft и публикация
+
+**Контекст:** Всегда видимые черновики всех участников дают координацию, но шум, давление и риск преждевременных конфликтов. Полная скрытность до submit — приватность, но сюрпризы при publish.
+
+**Решение:**
+
+- **Round:** один shared draft — виден всем участникам с правом чтения; эксклюзив только на **запись** (`activeEditorId`).
+- **Owner hub:** участники не видят **живые** fork'и друг друга. Текст чужой работы — только после **submit** (в ленте `Edit` / review).
+- **Owner** (арбитр) в MVP видит **submitted** proposals; полная видимость всех server-side draft owner'у — опционально позже (гибрид с предупреждением при publish).
+- **Публикация head** (`fixVersion`): gate по **submitted** изменениям, не по незасабмиченным draft. Незасабмиченный draft участника **не блокирует** publish owner'а.
+- После publish: уведомление всем с незасабмиченным или устаревшим draft от старого head.
+
+**Сценарий:** owner публикует, участник правил, но не submit'ил → vN+1 из draft owner; правки участника **не в каноне**; draft участника needs rebase; уведомление.
+
+**Последствия:**
+
+- UI: явное различие «Черновик сохранён» vs «Отправлено на рассмотрение».
+- Метаданные «у кого есть неотправленный черновик» без текста — возможное расширение без смены ADR.
 
 ---
 
@@ -125,14 +255,24 @@
 
 | Тема | Статус |
 |------|--------|
-| Live-режим (realtime) | Не проектируем детально |
-| Track changes / suggestions | Diff + комментарии достаточно для MVP |
+| Live-режим (realtime) | Не проектируем детально; JSON doc — там ([ADR-012](#adr-012-редактор-и-просмотр-правок-async-mvp-на-md)) |
+| Inline track changes в редакторе | Отдельно от diff + review mode ([ADR-012](#adr-012-редактор-и-просмотр-правок-async-mvp-на-md)) |
 | Чистый Open (DAG без owner) | Только по запросу |
-| 3-way auto-merge | Ручной merge owner в draft |
+| 3-way auto-merge | Ручной merge арбитра; auto только для совместимых hunks ([ADR-013](#adr-013-handoff-для-пересылки-owner-hub-для-арбитража)) |
 | Смена asyncWorkflow после создания | Избегать; миграция сложна |
-| Handoff (передача хода) | После owner hub в коде |
+| Round: `activeEditorId`, lock при правке | [ADR-015](#adr-015-round--базовый-async-подрежим); в прототипе — частично |
+| Личный draft per actor в storage | Owner hub / handoff ([ADR-011](#adr-011-head-draft-и-submit)); round — один shared draft |
+| Owner видит все draft до submit | Опционально; MVP — только submitted ([ADR-014](#adr-014-видимость-draft-и-публикация)) |
 | PHP backend / OpenAPI | После стабилизации local-адаптера по [api-sketch.md](./api-sketch.md) |
 
 ## Расхождение с прототипом `front/`
 
-Реализовано: `codraft.state.v2`, owner hub, Edit/Comment, capabilities, `getEditorBundle`, ReviewPanel. Не реализовано: handoff, diff UI, margin-комментарии, range-edit из выделения, HTTP-адаптер.
+**Целевая модель:** `asyncWorkflow: round` по умолчанию ([ADR-015](#adr-015-round--базовый-async-подрежим)).
+
+**Реализовано:** `codraft.state.v3`, Edit/Comment, capabilities, `getEditorBundle`, ReviewPanel, actorDrafts.
+
+**Частично:** личный `actorDraft` (ближе к owner hub), autosave, `submitActorEdit`, режим «Правки», rebase-баннер; handoff-поля (`currentActorId`) без полной передачи хода.
+
+**Не реализовано под round:** `activeEditorId`, shared draft как базовый режим, захват/освобождение lock, LLM tools по версиям, diff UI, HTTP-адаптер.
+
+**Расширения (опционально):** полный handoff (передача, reclaim, confirm); owner hub как явный выбор при создании.

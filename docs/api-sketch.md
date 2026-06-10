@@ -1,18 +1,19 @@
-# API sketch (owner hub)
+# API sketch
 
 Контракт `documentsApi` для local- и HTTP-адаптера. См. [domain-model.md](./domain-model.md).
 
-**Actor:** `{ id, name }` из `userStore` (пока без auth).
+**Actor:** `{ id, name }` из `userStore` (пока без auth). LLM — актор с id вроде `llm:…`.
 
 ---
 
 ## Принципы
 
 1. Один интерфейс для local / HTTP.
-2. `capabilities` в `DocumentDetail` — UI не дублирует правила owner hub.
+2. `capabilities` в `DocumentDetail` — UI не дублирует правила подрежима.
 3. Версии immutable.
 4. Diff на клиенте.
 5. Ошибки: `{ code, message }`.
+6. **Round (по умолчанию):** `updateDraft` с захватом lock; `fixVersion` завершает раунд.
 
 ---
 
@@ -26,17 +27,19 @@
 
 `{ title, content, updatedAt, updatedBy: UserRef }`
 
-### Capabilities
+### Capabilities (round)
 
 ```ts
 {
-  canEditDraft: boolean
-  canFixVersion: boolean
-  canSubmitEdit: boolean
-  canApplyEdit: boolean
+  canEditDraft: boolean      // активный редактор или между раундами
+  canFixVersion: boolean     // держит lock
   canComment: boolean
+  canSubmitEdit: false       // round
+  canApplyEdit: false
 }
 ```
+
+При `owner_hub` — дополнительно `canSubmitEdit`, `canApplyEdit` по правилам owner hub.
 
 ### DocumentSummary
 
@@ -44,7 +47,25 @@
 
 ### DocumentDetail
 
-`{ id, createdBy, owner, collaborationMode, asyncWorkflow, headVersionId, headVersionNumber, draft, capabilities, createdAt }`
+```ts
+{
+  id, createdBy, owner,
+  collaborationMode,
+  asyncWorkflow,              // 'round' | 'handoff' | 'owner_hub'
+  headVersionId, headVersionNumber,
+  draft,
+  activeEditorId: UserRef | null,   // round
+  currentActorId?: string,          // handoff
+  capabilities,
+  createdAt
+}
+```
+
+### EffectiveContent (для LLM / read)
+
+`{ title, content, source: 'draft' | 'head', headVersionId, headVersionNumber }`
+
+Вычисляется: draft, если `draft.content !== head.content` (или title); иначе head.
 
 ### Version
 
@@ -53,11 +74,12 @@
   id, documentId, parentVersionId, number,
   author: UserRef, title, content, summary,
   incorporatedEditIds: string[],
-  createdAt
+  createdAt,
+  handoff?: { to: UserRef }    // handoff
 }
 ```
 
-### Edit
+### Edit (owner hub)
 
 ```ts
 {
@@ -67,10 +89,8 @@
   summary,
   status: 'pending' | 'applied' | 'rejected' | 'superseded',
   createdAt,
-  // scope === 'document'
   title?: string,
   content?: string,
-  // scope === 'range'
   anchor?: CommentAnchor,
   suggestedText?: string
 }
@@ -99,7 +119,7 @@
 
 `{ document: DocumentDetail, versions: Version[], edits: Edit[], comments: Comment[] }`
 
-`edits` по умолчанию: `pending` к `headVersionId`.
+`edits` — пустой или отсутствует в round; в owner hub — `pending` к `headVersionId`.
 
 ---
 
@@ -110,15 +130,25 @@
 | Метод | Описание |
 |-------|----------|
 | `listDocuments(actor?)` | Список summary |
-| `createDocument(actor, { title?, content? })` | Document + v1 + draft |
+| `createDocument(actor, { title?, content?, asyncWorkflow? })` | Document + v1 + draft; default `asyncWorkflow: 'round'` |
 | `getDocument(documentId, actor)` | DocumentDetail |
 | `getEditorBundle(documentId, actor)` | EditorBundle |
+| `getEffectiveContent(documentId, actor)` | EffectiveContent для LLM |
 
-### Draft
+### Draft (round)
 
 | Метод | Описание |
 |-------|----------|
-| `updateDraft(documentId, actor, { title?, content? })` | Только owner |
+| `updateDraft(documentId, actor, { title?, content? })` | Round: захват `activeEditorId` при `null`; правки только при своём lock. `CONFLICT`, если lock у другого |
+| `releaseEditLock(documentId, actor)` | Опционально: сброс lock без fixVersion (отмена раунда) |
+
+### Draft (owner hub)
+
+| Метод | Описание |
+|-------|----------|
+| `updateDraft(documentId, actor, …)` | Только owner (канонический draft) |
+| `updateActorDraft(documentId, actor, …)` | Участник — свой fork |
+| `submitActorEdit(…)` / `submitEdit(…)` | Fork → Edit |
 
 ### Версии
 
@@ -126,32 +156,24 @@
 |-------|----------|
 | `listVersions(documentId, actor)` | number desc |
 | `getVersion(documentId, versionId, actor)` | |
-| `fixVersion(documentId, actor, { summary, incorporatedEditIds? })` | Снимок draft → vN+1 |
-| `restoreVersionToDraft(documentId, versionId, actor)` | Owner, без новой версии |
+| `fixVersion(documentId, actor, { summary, incorporatedEditIds? })` | Снимок draft → vN+1; round: `activeEditorId = null` |
+| `restoreVersionToDraft(documentId, versionId, actor)` | Без новой версии; round: захват lock |
 
-### Правки (Edit)
+### Правки (Edit, owner hub)
 
 | Метод | Описание |
 |-------|----------|
-| `listEdits(documentId, actor, filter?)` | `baseVersionId`, `status` |
+| `listEdits(documentId, actor, filter?)` | |
 | `submitEdit(documentId, actor, input)` | Не owner |
-| `applyEdit(documentId, editId, actor)` | Owner; document → весь draft, range → фрагмент |
-| `rejectEdit(documentId, editId, actor)` | Owner; `pending` → `rejected` |
-| `withdrawEdit(documentId, editId, actor)` | Автор; `pending` → `rejected` |
+| `applyEdit(documentId, editId, actor)` | Owner |
+| `rejectEdit(documentId, editId, actor)` | Owner |
+| `withdrawEdit(documentId, editId, actor)` | Автор |
 
-**submitEdit input:**
+### Handoff (расширение)
 
-```ts
-{
-  baseVersionId: string
-  scope: 'document' | 'range'
-  summary: string
-  title?: string
-  content?: string
-  anchor?: CommentAnchor
-  suggestedText?: string
-}
-```
+| Метод | Описание |
+|-------|----------|
+| `handoff(documentId, actor, { to, summary })` | fixVersion + смена `currentActorId` |
 
 ### Комментарии
 
@@ -160,24 +182,35 @@
 | `listComments(documentId, actor, { targetVersionId? })` | |
 | `addComment(documentId, actor, { targetVersionId, anchor, body })` | |
 | `addCommentReply(commentId, actor, { body })` | |
-| `resolveComment(commentId, actor, { resolution })` | `acknowledged` \| `rejected` |
-| `reopenComment(commentId, actor)` | → `open`, `resolution: null` |
+| `resolveComment(commentId, actor, { resolution })` | |
+| `reopenComment(commentId, actor)` | |
+
+---
+
+## LLM tools (ориентир)
+
+| Tool | API |
+|------|-----|
+| Текущее состояние | `getEffectiveContent` |
+| История | `listVersions` |
+| Конкретная версия | `getVersion` |
+| Правка | `updateDraft` (при своём lock) |
+| Завершить раунд | `fixVersion` |
 
 ---
 
 ## Коды ошибок
 
-`NOT_FOUND` | `FORBIDDEN` | `VALIDATION` | `CONFLICT`
+`NOT_FOUND` | `FORBIDDEN` | `VALIDATION` | `CONFLICT` (lock занят другим актором)
 
 ---
 
 ## HTTP (черновик)
 
+| POST | `/documents/:id/draft` |
+| POST | `/documents/:id/versions` |
 | POST | `/documents/:id/edits` |
 | POST | `/documents/:id/edits/:eid/apply` |
-| POST | `/documents/:id/edits/:eid/reject` |
-
-Proposals → **edits** в путях.
 
 ---
 
@@ -192,4 +225,4 @@ Proposals → **edits** в путях.
 | `restoreVersion` | `restoreVersionToDraft` |
 | `proposal` | `edit` |
 
-Storage: `codraft.state.v2`
+Storage: `codraft.state.v3` (прототип); целевой default `asyncWorkflow: 'round'`.

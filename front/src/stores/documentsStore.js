@@ -8,6 +8,8 @@ export const useDocumentsStore = defineStore('documents', {
     versions: [],
     edits: [],
     comments: [],
+    headSnapshot: null,
+    actorDraft: null,
     loading: false,
     saving: false,
     error: '',
@@ -16,6 +18,8 @@ export const useDocumentsStore = defineStore('documents', {
   getters: {
     capabilities: (state) => state.currentDocument?.capabilities ?? null,
     headVersion: (state) => state.versions[0] ?? null,
+    canEditDraft: (state) => state.currentDocument?.capabilities?.canEditDraft ?? false,
+    isCurrentActor: (state) => state.currentDocument?.capabilities?.isCurrentActor ?? false,
   },
 
   actions: {
@@ -50,6 +54,8 @@ export const useDocumentsStore = defineStore('documents', {
         this.versions = bundle.versions
         this.edits = bundle.edits
         this.comments = bundle.comments
+        this.headSnapshot = bundle.head ?? null
+        this.actorDraft = bundle.actorDraft ?? null
       } catch (error) {
         this.error = error.message
       } finally {
@@ -67,6 +73,25 @@ export const useDocumentsStore = defineStore('documents', {
       }
     },
 
+    async updateActorDraft(documentId, actor, payload) {
+      this.saving = true
+      try {
+        this.actorDraft = await documentsApi.updateActorDraft(documentId, actor, payload)
+      } finally {
+        this.saving = false
+      }
+    },
+
+    async rebaseActorDraft(documentId, actor) {
+      this.actorDraft = await documentsApi.rebaseActorDraft(documentId, actor)
+    },
+
+    async submitActorEdit(documentId, actor, payload) {
+      const edit = await documentsApi.submitActorEdit(documentId, actor, payload)
+      this.edits = [edit, ...this.edits.filter((item) => item.id !== edit.id)]
+      return edit
+    },
+
     async fixVersion(documentId, actor, payload) {
       const result = await documentsApi.fixVersion(documentId, actor, payload)
       this.currentDocument = result.document
@@ -75,6 +100,9 @@ export const useDocumentsStore = defineStore('documents', {
         baseVersionId: result.document.headVersionId,
         status: 'pending',
       })
+      const bundle = await documentsApi.getEditorBundle(documentId, actor)
+      this.headSnapshot = bundle.head
+      this.actorDraft = bundle.actorDraft
       return result.version
     },
 

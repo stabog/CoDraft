@@ -9,8 +9,6 @@ const props = defineProps({
   canComment: { type: Boolean, default: true },
   canSubmitEdit: { type: Boolean, default: false },
   canApplyEdit: { type: Boolean, default: false },
-  draftTitle: { type: String, default: '' },
-  draftContent: { type: String, default: '' },
 })
 
 const emit = defineEmits([
@@ -25,8 +23,6 @@ const emit = defineEmits([
 
 const commentBody = ref('')
 const replies = ref({})
-const editSummary = ref('')
-const showEditForm = ref(false)
 
 const headComments = computed(() =>
   props.comments.filter((item) => item.targetVersionId === props.headVersionId),
@@ -55,18 +51,6 @@ function submitReply(commentId) {
   replies.value[commentId] = ''
 }
 
-function submitDocumentEdit() {
-  if (!editSummary.value.trim()) return
-  emit('submit-edit', {
-    scope: 'document',
-    summary: editSummary.value.trim(),
-    title: props.draftTitle,
-    content: props.draftContent,
-  })
-  editSummary.value = ''
-  showEditForm.value = false
-}
-
 function editScopeLabel(edit) {
   return edit.scope === 'range' ? 'Правка фрагмента' : 'Правка документа'
 }
@@ -87,14 +71,8 @@ function resolutionLabel(comment) {
 
     <div v-else-if="canComment" class="hint">Выделите текст, чтобы оставить комментарий.</div>
 
-    <div v-if="canSubmitEdit" class="edit-actions">
-      <button type="button" class="secondary" @click="showEditForm = !showEditForm">
-        {{ showEditForm ? 'Скрыть форму' : 'Предложить правку документа' }}
-      </button>
-      <form v-if="showEditForm" class="inline-form" @submit.prevent="submitDocumentEdit">
-        <textarea v-model="editSummary" placeholder="Что изменили и зачем" />
-        <button type="submit" :disabled="!editSummary.trim()">Отправить правку</button>
-      </form>
+    <div v-if="canSubmitEdit" class="hint">
+      Правки отправляются из редактора кнопкой «Отправить правки».
     </div>
 
     <div v-if="feed.length" class="feed">

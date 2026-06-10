@@ -1,7 +1,8 @@
 import { apiError } from './apiError'
 import { mergeDemoIntoState } from '../mocks/demoDecisionsDocument'
 
-const STORAGE_KEY = 'codraft.state.v2'
+const STORAGE_KEY = 'codraft.state.v3'
+const LEGACY_V2_KEY = 'codraft.state.v2'
 const LEGACY_KEY = 'codraft.documents.v1'
 
 const now = () => new Date().toISOString()
@@ -13,7 +14,37 @@ function userRef(actor) {
 }
 
 function emptyState() {
-  return { documents: [], versions: [], edits: [], comments: [] }
+  return { documents: [], versions: [], edits: [], comments: [], actorDrafts: [] }
+}
+
+function normalizeState(state) {
+  let changed = false
+
+  if (!state.actorDrafts) {
+    state.actorDrafts = []
+    changed = true
+  }
+
+  for (const document of state.documents || []) {
+    if (!document.currentActorId) {
+      document.currentActorId = document.ownerId
+      changed = true
+    }
+    if (!document.asyncWorkflow || document.asyncWorkflow === 'owner_hub') {
+      document.asyncWorkflow = 'handoff'
+      changed = true
+    }
+  }
+
+  return { state, changed }
+}
+
+function isHandoffWorkflow(document) {
+  return document.asyncWorkflow === 'handoff'
+}
+
+function isCurrentActor(document, actor) {
+  return document.currentActorId === actor.id
 }
 
 function migrateLegacy(raw) {
@@ -33,8 +64,9 @@ function migrateLegacy(raw) {
       createdBy: author,
       ownerId: actor.id,
       collaborationMode: 'async',
-      asyncWorkflow: 'owner_hub',
+      asyncWorkflow: 'handoff',
       headVersionId: versionId,
+      currentActorId: actor.id,
       draft: {
         title,
         content,
@@ -119,28 +151,45 @@ function migrateLegacy(raw) {
 function readState() {
   let state
 
+  let normalizedChanged = false
+
   const raw = localStorage.getItem(STORAGE_KEY)
   if (raw) {
     try {
-      state = JSON.parse(raw)
+      const parsed = normalizeState(JSON.parse(raw))
+      state = parsed.state
+      normalizedChanged = parsed.changed
     } catch {
       state = emptyState()
     }
   } else {
-    const legacy = localStorage.getItem(LEGACY_KEY)
-    if (legacy) {
+    const legacyV2 = localStorage.getItem(LEGACY_V2_KEY)
+    if (legacyV2) {
       try {
-        state = migrateLegacy(JSON.parse(legacy))
+        const parsed = normalizeState(JSON.parse(legacyV2))
+        state = parsed.state
+        normalizedChanged = true
       } catch {
         state = emptyState()
       }
     } else {
-      state = emptyState()
+      const legacy = localStorage.getItem(LEGACY_KEY)
+      if (legacy) {
+        try {
+          const parsed = normalizeState(migrateLegacy(JSON.parse(legacy)))
+          state = parsed.state
+          normalizedChanged = true
+        } catch {
+          state = emptyState()
+        }
+      } else {
+        state = emptyState()
+      }
     }
   }
 
-  const { state: nextState, changed } = mergeDemoIntoState(state)
-  if (changed) {
+  const { state: nextState, changed: demoChanged } = mergeDemoIntoState(state)
+  if (normalizedChanged || demoChanged) {
     writeState(nextState)
   }
 
@@ -181,13 +230,104 @@ function getHeadVersion(state, document) {
 
 function capabilities(document, actor) {
   const isOwner = document.ownerId === actor.id
+
+  if (isHandoffWorkflow(document)) {
+    const hasTurn = isCurrentActor(document, actor)
+    return {
+      canEditDraft: hasTurn,
+      canEditActorDraft: !hasTurn,
+      canFixVersion: hasTurn,
+      canSubmitEdit: !hasTurn,
+      canApplyEdit: hasTurn,
+      canComment: true,
+      canViewReview: true,
+      isCurrentActor: hasTurn,
+      isOwner,
+    }
+  }
+
   return {
     canEditDraft: isOwner,
+    canEditActorDraft: !isOwner,
     canFixVersion: isOwner,
     canSubmitEdit: !isOwner,
     canApplyEdit: isOwner,
     canComment: true,
+    canViewReview: true,
+    isCurrentActor: false,
+    isOwner,
   }
+}
+
+function findActorDraft(state, documentId, userId) {
+  return state.actorDrafts.find((item) => item.documentId === documentId && item.userId === userId)
+}
+
+function getActorDraftRecord(state, documentId, userId) {
+  const draft = findActorDraft(state, documentId, userId)
+  if (!draft) throw apiError('NOT_FOUND', 'Actor draft not found')
+  return draft
+}
+
+function getOrCreateActorDraft(state, document, actor) {
+  const head = getHeadVersion(state, document)
+  let actorDraft = findActorDraft(state, document.id, actor.id)
+
+  if (!actorDraft) {
+    actorDraft = {
+      documentId: document.id,
+      userId: actor.id,
+      baseVersionId: document.headVersionId,
+      title: head.title,
+      content: head.content,
+      updatedAt: now(),
+      needsRebase: false,
+    }
+    state.actorDrafts.push(actorDraft)
+    return actorDraft
+  }
+
+  if (actorDraft.baseVersionId !== document.headVersionId && !actorDraft.needsRebase) {
+    actorDraft.needsRebase = true
+  }
+
+  return actorDraft
+}
+
+function markActorDraftsStale(state, document, oldHeadVersionId) {
+  for (const actorDraft of state.actorDrafts) {
+    if (actorDraft.documentId !== document.id) continue
+    if (actorDraft.baseVersionId !== oldHeadVersionId) continue
+    actorDraft.needsRebase = true
+  }
+}
+
+function replaceRangeInContent(content, anchor, suggestedText, baseContent) {
+  const { from, to, quotedText } = anchor
+  if (content.slice(from, to) === quotedText) {
+    return content.slice(0, from) + suggestedText + content.slice(to)
+  }
+
+  const index = content.indexOf(quotedText)
+  if (index >= 0) {
+    return content.slice(0, index) + suggestedText + content.slice(index + quotedText.length)
+  }
+
+  if (baseContent.slice(from, to) === quotedText) {
+    throw apiError('VALIDATION', 'Anchor no longer matches draft')
+  }
+
+  throw apiError('VALIDATION', 'Anchor not found in draft')
+}
+
+function toActorDraftDto(actorDraft) {
+  return clone({
+    baseVersionId: actorDraft.baseVersionId,
+    title: actorDraft.title,
+    content: actorDraft.content,
+    updatedAt: actorDraft.updatedAt,
+    needsRebase: Boolean(actorDraft.needsRebase),
+  })
 }
 
 function asExcerpt(content) {
@@ -217,6 +357,7 @@ function toDocumentDetail(document, state, actor) {
     owner: clone(document.createdBy),
     collaborationMode: document.collaborationMode,
     asyncWorkflow: document.asyncWorkflow,
+    currentActorId: document.currentActorId,
     headVersionId: document.headVersionId,
     headVersionNumber: head.number,
     draft: clone(document.draft),
@@ -267,8 +408,9 @@ export const localDocumentsApi = {
       createdBy: author,
       ownerId: actor.id,
       collaborationMode: 'async',
-      asyncWorkflow: 'owner_hub',
+      asyncWorkflow: 'handoff',
       headVersionId: versionId,
+      currentActorId: actor.id,
       draft: {
         title,
         content,
@@ -322,11 +464,26 @@ export const localDocumentsApi = {
       .filter((item) => item.documentId === documentId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 
+    const head = getHeadVersion(state, document)
+    const caps = capabilities(document, actor)
+    const actorDraft = caps.canEditDraft ? null : getOrCreateActorDraft(state, document, actor)
+
+    if (actorDraft) {
+      writeState(state)
+    }
+
     return clone({
       document: toDocumentDetail(document, state, actor),
       versions,
       edits,
       comments,
+      head: {
+        id: head.id,
+        number: head.number,
+        title: head.title,
+        content: head.content,
+      },
+      actorDraft: actorDraft ? toActorDraftDto(actorDraft) : null,
     })
   },
 
@@ -346,6 +503,90 @@ export const localDocumentsApi = {
 
     writeState(state)
     return clone(toDocumentDetail(document, state, actor))
+  },
+
+  async updateActorDraft(documentId, actor, input) {
+    const state = readState()
+    const document = getDocumentRecord(state, documentId)
+    assertCapability(document, actor, 'canEditActorDraft')
+
+    const actorDraft = getOrCreateActorDraft(state, document, actor)
+
+    if (input.title !== undefined) {
+      actorDraft.title = input.title?.trim() || 'Untitled document'
+    }
+    if (input.content !== undefined) {
+      actorDraft.content = input.content
+    }
+    actorDraft.updatedAt = now()
+
+    writeState(state)
+    return toActorDraftDto(actorDraft)
+  },
+
+  async rebaseActorDraft(documentId, actor) {
+    const state = readState()
+    const document = getDocumentRecord(state, documentId)
+    assertCapability(document, actor, 'canEditActorDraft')
+
+    const head = getHeadVersion(state, document)
+    let actorDraft = findActorDraft(state, document.id, actor.id)
+
+    if (!actorDraft) {
+      actorDraft = getOrCreateActorDraft(state, document, actor)
+    } else {
+      actorDraft.baseVersionId = document.headVersionId
+      actorDraft.title = head.title
+      actorDraft.content = head.content
+      actorDraft.needsRebase = false
+      actorDraft.updatedAt = now()
+    }
+
+    writeState(state)
+    return toActorDraftDto(actorDraft)
+  },
+
+  async submitActorEdit(documentId, actor, input) {
+    const state = readState()
+    const document = getDocumentRecord(state, documentId)
+    assertCapability(document, actor, 'canSubmitEdit')
+
+    const actorDraft = getActorDraftRecord(state, documentId, actor.id)
+    const head = getHeadVersion(state, document)
+
+    if (actorDraft.baseVersionId !== document.headVersionId) {
+      throw apiError('VALIDATION', 'Draft is outdated; rebase from current version first')
+    }
+
+    const summary = input.summary?.trim()
+    if (!summary) throw apiError('VALIDATION', 'Summary is required')
+
+    if (actorDraft.title === head.title && actorDraft.content === head.content) {
+      throw apiError('VALIDATION', 'No changes to submit')
+    }
+
+    const edit = {
+      id: makeId(),
+      documentId,
+      baseVersionId: document.headVersionId,
+      author: userRef(actor),
+      scope: 'document',
+      summary,
+      status: 'pending',
+      createdAt: now(),
+      title: actorDraft.title,
+      content: actorDraft.content,
+    }
+
+    state.edits.unshift(edit)
+
+    actorDraft.title = head.title
+    actorDraft.content = head.content
+    actorDraft.needsRebase = false
+    actorDraft.updatedAt = now()
+
+    writeState(state)
+    return clone(edit)
   },
 
   async listVersions(documentId) {
@@ -372,6 +613,7 @@ export const localDocumentsApi = {
     if (!summary) throw apiError('VALIDATION', 'Summary is required')
 
     const head = getHeadVersion(state, document)
+    const oldHeadVersionId = document.headVersionId
     const incorporatedEditIds = input.incorporatedEditIds || []
     const versionId = makeId()
     const timestamp = now()
@@ -392,6 +634,7 @@ export const localDocumentsApi = {
     state.versions.push(version)
     document.headVersionId = versionId
     supersedeEditsForHead(state, document, incorporatedEditIds)
+    markActorDraftsStale(state, document, oldHeadVersionId)
 
     writeState(state)
     return clone({
@@ -486,13 +729,12 @@ export const localDocumentsApi = {
       document.draft.content = edit.content
     } else {
       const base = getVersionRecord(state, documentId, edit.baseVersionId)
-      const { from, to, quotedText } = edit.anchor
-      const slice = document.draft.content.slice(from, to)
-      if (slice !== quotedText && base.content.slice(from, to) !== quotedText) {
-        throw apiError('VALIDATION', 'Anchor no longer matches draft')
-      }
-      document.draft.content =
-        document.draft.content.slice(0, from) + edit.suggestedText + document.draft.content.slice(to)
+      document.draft.content = replaceRangeInContent(
+        document.draft.content,
+        edit.anchor,
+        edit.suggestedText,
+        base.content,
+      )
     }
 
     document.draft.updatedAt = now()
