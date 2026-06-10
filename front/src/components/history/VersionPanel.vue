@@ -16,11 +16,14 @@ defineEmits(['restore'])
       <span>{{ versions.length }}</span>
     </div>
 
-    <div class="version-list">
+    <p v-if="!versions.length" class="empty-state">Пока нет зафиксированных версий.</p>
+
+    <div v-else class="version-list">
       <article v-for="version in versions" :key="version.id" class="version-item">
-        <strong>{{ version.summary }}</strong>
+        <strong>{{ version.summary || 'Версия' }}</strong>
         <span>{{ version.authorName }} · {{ new Date(version.createdAt).toLocaleString() }}</span>
-        <button type="button" class="ghost-button" @click="$emit('restore', version.id)">Восстановить</button>
+        <span>{{ version.commentsSnapshot?.length || 0 }} комментариев в снимке</span>
+        <button type="button" class="ghost-button" @click="$emit('restore', version.id)">Восстановить в черновик</button>
       </article>
     </div>
   </section>

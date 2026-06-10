@@ -55,15 +55,17 @@ export const useDocumentsStore = defineStore('documents', {
       this.saving = true
       try {
         this.currentDocument = await documentsApi.update(id, payload)
-        const [documents, versions] = await Promise.all([
-          documentsApi.list(),
-          documentsApi.listVersions(id),
-        ])
-        this.documents = documents
-        this.versions = versions
+        this.documents = await documentsApi.list()
       } finally {
         this.saving = false
       }
+    },
+
+    async createVersion(documentId, payload) {
+      const version = await documentsApi.createVersion(documentId, payload)
+      this.versions = await documentsApi.listVersions(documentId)
+      this.currentDocument = await documentsApi.get(documentId)
+      return version
     },
 
     async restoreVersion(documentId, versionId, payload) {

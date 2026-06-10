@@ -75,16 +75,28 @@ function asSummary(document) {
   }
 }
 
-function createVersion(state, document, authorName, summary) {
-  state.versions.unshift({
+function getDocumentComments(state, documentId) {
+  return state.comments.filter((item) => item.documentId === documentId)
+}
+
+function createVersion(state, document, authorName) {
+  const createdAt = now()
+  const versionNumber = state.versions.filter((item) => item.documentId === document.id).length + 1
+  const commentsSnapshot = clone(getDocumentComments(state, document.id))
+
+  const version = {
     id: makeId(),
     documentId: document.id,
     title: document.title,
     content: document.content,
     authorName,
-    summary,
-    createdAt: now(),
-  })
+    summary: `Версия ${versionNumber}`,
+    commentsSnapshot,
+    createdAt,
+  }
+
+  state.versions.unshift(version)
+  return version
 }
 
 export const localDocumentsApi = {
@@ -115,13 +127,12 @@ export const localDocumentsApi = {
     }
 
     state.documents.unshift(document)
-    createVersion(state, document, authorName, 'Document created')
     writeState(state)
 
     return clone(document)
   },
 
-  async update(id, { title, content, authorName, summary = 'Autosaved changes' }) {
+  async update(id, { title, content }) {
     const state = readState()
     const document = state.documents.find((item) => item.id === id)
     if (!document) {
@@ -129,17 +140,28 @@ export const localDocumentsApi = {
     }
 
     const nextTitle = title?.trim() || 'Untitled document'
-    const changed = document.title !== nextTitle || document.content !== content
     document.title = nextTitle
     document.content = content
     document.updatedAt = now()
 
-    if (changed) {
-      createVersion(state, document, authorName, summary)
-    }
-
     writeState(state)
     return clone(document)
+  },
+
+  async createVersion(documentId, { title, content, authorName }) {
+    const state = readState()
+    const document = state.documents.find((item) => item.id === documentId)
+    if (!document) {
+      throw new Error('Document not found')
+    }
+
+    document.title = title?.trim() || 'Untitled document'
+    document.content = content
+    document.updatedAt = now()
+
+    const version = createVersion(state, document, authorName)
+    writeState(state)
+    return clone(version)
   },
 
   async listVersions(documentId) {
@@ -158,7 +180,6 @@ export const localDocumentsApi = {
     document.title = version.title
     document.content = version.content
     document.updatedAt = now()
-    createVersion(state, document, authorName, `Restored version from ${new Date(version.createdAt).toLocaleString()}`)
     writeState(state)
 
     return clone(document)

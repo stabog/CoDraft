@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import CommentPanel from '../components/comments/CommentPanel.vue'
 import MarkdownEditor from '../components/editor/MarkdownEditor.vue'
@@ -22,6 +22,12 @@ const selectedRange = ref(null)
 const saveTimer = ref(null)
 const lastSavedContent = ref('')
 const lastSavedTitle = ref('')
+
+const latestVersion = computed(() => documentsStore.versions[0] || null)
+const hasChangesSinceVersion = computed(() => {
+  if (!latestVersion.value) return Boolean(draft.title.trim() || draft.content.trim())
+  return latestVersion.value.title !== draft.title || latestVersion.value.content !== draft.content
+})
 
 onMounted(async () => {
   await documentsStore.loadDocument(route.params.id)
@@ -57,7 +63,18 @@ function scheduleSave() {
     })
     lastSavedTitle.value = draft.title
     lastSavedContent.value = draft.content
-  }, 700)
+  }, 900)
+}
+
+async function createVersion() {
+  clearTimeout(saveTimer.value)
+  await documentsStore.createVersion(route.params.id, {
+    title: draft.title,
+    content: draft.content,
+    authorName: userStore.name,
+  })
+  lastSavedTitle.value = draft.title
+  lastSavedContent.value = draft.content
 }
 
 function handleSelection(range) {
@@ -91,9 +108,16 @@ async function restoreVersion(versionId) {
     <template v-else>
       <div class="editor-toolbar">
         <input v-model="draft.title" class="title-input" type="text" />
-        <div class="save-state">
-          <span v-if="documentsStore.saving">Сохраняем...</span>
-          <span v-else>Все правки сохранены</span>
+        <div class="version-actions">
+          <div class="save-state">
+            <span v-if="documentsStore.saving">Сохраняем черновик...</span>
+            <span v-else>Черновик сохранен</span>
+            <span class="dot">·</span>
+            <span>{{ hasChangesSinceVersion ? 'Есть изменения после версии' : 'Версия актуальна' }}</span>
+          </div>
+          <button type="button" :disabled="!hasChangesSinceVersion" @click="createVersion">
+            Зафиксировать версию
+          </button>
         </div>
       </div>
 
