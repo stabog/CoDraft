@@ -111,69 +111,58 @@ function setEditable(editable) {
 
 <style scoped>
 .visual-editor-shell {
-  background: #eef1f5;
-  min-height: calc(100vh - 242px);
+  height: 100%;
   overflow: auto;
-  padding: 28px;
+  padding: 8px 32px 32px;
 }
 
 .milkdown-editor {
   margin: 0 auto;
-  max-width: 860px;
+  max-width: 720px;
 }
 
 .milkdown-editor :deep(.milkdown) {
-  background: #ffffff;
-  border: 1px solid #e4e7ec;
-  border-radius: 8px;
-  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.06);
-  min-height: calc(100vh - 300px);
+  background: transparent;
 }
 
 .milkdown-editor :deep(.editor) {
-  min-height: calc(100vh - 300px);
-  padding: 48px 58px;
+  min-height: 200px;
+  padding: 0;
 }
 
 .milkdown-editor :deep(.ProseMirror) {
-  color: #1f2937;
+  color: var(--text-normal);
   font-size: 16px;
   line-height: 1.72;
-  min-height: calc(100vh - 396px);
+  min-height: 200px;
   outline: none;
 }
 
 .milkdown-editor :deep(.ProseMirror h1) {
-  font-size: 34px;
-  line-height: 1.15;
-  margin: 0 0 22px;
+  font-size: 1.6em;
+  line-height: 1.2;
+  margin: 24px 0 16px;
 }
 
 .milkdown-editor :deep(.ProseMirror h2) {
-  font-size: 24px;
+  font-size: 1.3em;
   line-height: 1.25;
-  margin: 28px 0 14px;
+  margin: 20px 0 12px;
 }
 
 .milkdown-editor :deep(.ProseMirror p) {
-  margin: 0 0 14px;
+  margin: 0 0 12px;
 }
 
 .milkdown-editor :deep(.ProseMirror ul),
 .milkdown-editor :deep(.ProseMirror ol) {
-  margin: 0 0 16px;
+  margin: 0 0 14px;
   padding-left: 24px;
 }
 
 @media (max-width: 720px) {
   .visual-editor-shell {
-    min-height: 460px;
-    padding: 12px;
-  }
-
-  .milkdown-editor :deep(.editor) {
-    min-height: 430px;
-    padding: 26px 22px;
+    padding: 8px 16px 24px;
   }
 }
 </style>

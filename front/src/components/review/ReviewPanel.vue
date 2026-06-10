@@ -79,11 +79,6 @@ function resolutionLabel(comment) {
 
 <template>
   <section class="review-panel">
-    <div class="pane-heading">
-      <h2>Замечания</h2>
-      <span>{{ feed.length }}</span>
-    </div>
-
     <form v-if="canComment && selectedRange" class="inline-form" @submit.prevent="submitComment">
       <p class="quote">"{{ selectedRange.anchor.quotedText }}"</p>
       <textarea v-model="commentBody" placeholder="Комментарий к фрагменту" />
@@ -171,187 +166,173 @@ function resolutionLabel(comment) {
 
 <style scoped>
 .review-panel {
-  background: #ffffff;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
 }
 
-.pane-heading {
-  align-items: center;
-  border-bottom: 1px solid #e1e5eb;
-  display: flex;
-  justify-content: space-between;
-  min-height: 60px;
-  padding: 0 18px;
-}
-
-.pane-heading h2 {
-  font-size: 13px;
-  letter-spacing: 0.04em;
-  margin: 0;
-  text-transform: uppercase;
-}
-
-.pane-heading span,
 .hint,
 .meta span {
-  color: #667085;
+  color: var(--text-muted);
 }
 
 .hint {
   line-height: 1.45;
   margin: 0;
-  padding: 18px;
+  padding: 12px;
 }
 
 .inline-form,
 .edit-actions {
-  border-bottom: 1px solid #e1e5eb;
-  padding: 16px 18px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 12px;
 }
 
 .edit-actions {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .quote,
 blockquote {
-  background: #f4f6fa;
-  border-left: 3px solid #4f7df3;
-  color: #667085;
+  background: var(--background-primary);
+  border-left: 2px solid var(--interactive-accent);
+  color: var(--text-muted);
+  font-size: 13px;
   line-height: 1.35;
-  margin: 0 0 12px;
-  padding: 10px 12px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
 }
 
 .feed-item.edit blockquote {
-  border-left-color: #12b76a;
+  border-left-color: var(--color-green);
 }
 
 textarea {
-  border: 1px solid #cfd6e2;
-  border-radius: 8px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  color: var(--text-normal);
   display: block;
-  min-height: 72px;
-  padding: 12px;
+  font-size: 13px;
+  min-height: 64px;
+  padding: 8px;
   resize: vertical;
   width: 100%;
 }
 
 button {
-  background: #4f7df3;
-  border-radius: 8px;
-  color: #ffffff;
-  margin-top: 10px;
-  min-height: 40px;
-  padding: 0 14px;
+  font-size: 12px;
+  margin-top: 8px;
+  min-height: 30px;
 }
 
 button.secondary {
-  background: #eef2ff;
-  color: #344054;
   margin-top: 0;
   width: 100%;
 }
 
 button.ghost {
   background: transparent;
-  color: #4f7df3;
+  color: var(--text-muted);
   margin-top: 0;
 }
 
-.feed {
-  max-height: calc(100vh - 340px);
-  overflow: auto;
-}
-
 .feed-item {
-  border-bottom: 1px solid #e1e5eb;
-  padding: 18px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 12px;
 }
 
 .feed-item.resolved,
 .feed-item.applied,
 .feed-item.rejected,
 .feed-item.superseded {
-  opacity: 0.65;
+  opacity: 0.55;
 }
 
 .meta {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.meta strong {
+  color: var(--text-normal);
+  font-size: 13px;
 }
 
 .badge {
-  background: #ecfdf3;
-  border-radius: 999px;
-  color: #027a48;
-  font-size: 11px;
+  background: rgba(61, 214, 140, 0.15);
+  border-radius: 3px;
+  color: var(--color-green);
+  font-size: 10px;
   font-weight: 700;
-  padding: 4px 8px;
+  padding: 2px 6px;
   text-transform: uppercase;
 }
 
 .badge.comment {
-  background: #eff4ff;
-  color: #3538cd;
+  background: rgba(127, 109, 242, 0.15);
+  color: var(--interactive-accent-hover);
 }
 
 .summary,
 .body,
 .suggested {
-  color: #344054;
+  color: var(--text-normal);
+  font-size: 13px;
   line-height: 1.5;
-  margin: 8px 0;
+  margin: 6px 0;
 }
 
 .row-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .replies {
   display: grid;
-  gap: 8px;
-  margin: 12px 0;
+  gap: 6px;
+  margin: 8px 0;
 }
 
 .reply {
-  background: #f8fafc;
-  border-radius: 8px;
-  padding: 10px;
+  background: var(--background-primary);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.reply strong {
+  color: var(--text-normal);
+  font-size: 12px;
 }
 
 .reply p {
+  color: var(--text-muted);
+  font-size: 13px;
   margin: 4px 0 0;
 }
 
 .reply-form {
   display: grid;
-  gap: 8px;
-  grid-template-columns: 1fr 48px;
-  margin-top: 12px;
+  gap: 6px;
+  grid-template-columns: 1fr 36px;
+  margin-top: 8px;
 }
 
 .reply-form input {
-  border: 1px solid #cfd6e2;
-  border-radius: 8px;
-  min-height: 40px;
-  padding: 0 12px;
+  background: var(--background-primary);
+  font-size: 13px;
+  min-height: 30px;
+  padding: 0 8px;
 }
 
 .reply-form button {
   margin-top: 0;
   padding: 0;
-}
-
-@media (max-width: 1180px) {
-  .feed {
-    max-height: none;
-  }
 }
 </style>

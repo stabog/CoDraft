@@ -1,4 +1,5 @@
 import { apiError } from './apiError'
+import { mergeDemoIntoState } from '../mocks/demoDecisionsDocument'
 
 const STORAGE_KEY = 'codraft.state.v2'
 const LEGACY_KEY = 'codraft.documents.v1'
@@ -116,31 +117,34 @@ function migrateLegacy(raw) {
 }
 
 function readState() {
+  let state
+
   const raw = localStorage.getItem(STORAGE_KEY)
   if (raw) {
     try {
-      return JSON.parse(raw)
+      state = JSON.parse(raw)
     } catch {
-      const state = emptyState()
-      writeState(state)
-      return state
+      state = emptyState()
+    }
+  } else {
+    const legacy = localStorage.getItem(LEGACY_KEY)
+    if (legacy) {
+      try {
+        state = migrateLegacy(JSON.parse(legacy))
+      } catch {
+        state = emptyState()
+      }
+    } else {
+      state = emptyState()
     }
   }
 
-  const legacy = localStorage.getItem(LEGACY_KEY)
-  if (legacy) {
-    try {
-      const state = migrateLegacy(JSON.parse(legacy))
-      writeState(state)
-      return state
-    } catch {
-      /* fall through */
-    }
+  const { state: nextState, changed } = mergeDemoIntoState(state)
+  if (changed) {
+    writeState(nextState)
   }
 
-  const state = emptyState()
-  writeState(state)
-  return state
+  return nextState
 }
 
 function writeState(state) {

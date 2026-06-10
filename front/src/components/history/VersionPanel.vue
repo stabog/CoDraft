@@ -15,11 +15,6 @@ defineEmits(['restore'])
 
 <template>
   <section class="versions-panel">
-    <div class="pane-heading">
-      <h2>История</h2>
-      <span>{{ versions.length }}</span>
-    </div>
-
     <p v-if="!versions.length" class="empty-state">Пока нет зафиксированных версий.</p>
 
     <div v-else class="version-list">
@@ -29,7 +24,7 @@ defineEmits(['restore'])
         <span v-if="version.incorporatedEditIds?.length">
           Учтено правок: {{ version.incorporatedEditIds.length }}
         </span>
-        <button v-if="canRestore" type="button" class="ghost-button" @click="$emit('restore', version.id)">
+        <button v-if="canRestore" type="button" class="ghost" @click="$emit('restore', version.id)">
           Восстановить в черновик
         </button>
       </article>
@@ -39,59 +34,44 @@ defineEmits(['restore'])
 
 <style scoped>
 .versions-panel {
-  background: #ffffff;
-}
-
-.pane-heading {
-  align-items: center;
-  border-bottom: 1px solid #e1e5eb;
-  display: flex;
-  justify-content: space-between;
-  min-height: 60px;
-  padding: 0 18px;
-}
-
-.pane-heading h2 {
-  font-size: 13px;
-  letter-spacing: 0.04em;
-  margin: 0;
-  text-transform: uppercase;
-}
-
-.pane-heading span,
-.version-item span,
-.empty-state {
-  color: #667085;
-}
-
-.empty-state {
-  line-height: 1.45;
-  margin: 0;
-  padding: 18px;
-}
-
-.version-list {
-  max-height: calc(100vh - 260px);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
 }
 
+.version-item span,
+.empty-state {
+  color: var(--text-muted);
+}
+
+.empty-state {
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 12px;
+}
+
 .version-item {
-  border-bottom: 1px solid #e1e5eb;
+  border-bottom: 1px solid var(--background-modifier-border);
   display: grid;
-  gap: 8px;
-  padding: 18px;
+  gap: 4px;
+  padding: 12px;
 }
 
-.ghost-button {
-  background: transparent;
-  color: #4f7df3;
+.version-item strong {
+  color: var(--text-normal);
+  font-size: 13px;
+}
+
+.version-item span {
+  font-size: 12px;
+}
+
+.version-item button {
+  font-size: 12px;
   justify-self: start;
-  padding: 0;
-}
-
-@media (max-width: 1180px) {
-  .version-list {
-    max-height: none;
-  }
+  margin-top: 4px;
+  min-height: 28px;
+  padding: 0 8px;
 }
 </style>

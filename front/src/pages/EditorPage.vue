@@ -5,12 +5,14 @@ import MarkdownEditor from '../components/editor/MarkdownEditor.vue'
 import VisualEditor from '../components/editor/VisualEditor.vue'
 import ReviewPanel from '../components/review/ReviewPanel.vue'
 import VersionPanel from '../components/history/VersionPanel.vue'
+import { useSidebarState } from '../composables/useSidebarState'
 import { useDocumentsStore } from '../stores/documentsStore'
 import { useUserStore } from '../stores/userStore'
 
 const route = useRoute()
 const documentsStore = useDocumentsStore()
 const userStore = useUserStore()
+const { open: rightOpen, toggle: toggleRight } = useSidebarState('codraft-sidebar-right', true)
 
 const draft = reactive({
   title: '',
@@ -31,6 +33,12 @@ const canEdit = computed(() => capabilities.value?.canEditDraft ?? false)
 const hasChangesSinceVersion = computed(() => {
   if (!headVersion.value) return Boolean(draft.title.trim() || draft.content.trim())
   return headVersion.value.title !== draft.title || headVersion.value.content !== draft.content
+})
+
+const saveStatus = computed(() => {
+  if (!canEdit.value) return 'Черновик владельца'
+  if (documentsStore.saving) return 'Сохраняем...'
+  return 'Сохранено'
 })
 
 onMounted(async () => {
@@ -142,59 +150,83 @@ async function restoreVersion(versionId) {
 
 <template>
   <section class="editor-page">
-    <div v-if="documentsStore.loading || !ready" class="muted">Открываем документ...</div>
-    <div v-else-if="documentsStore.error" class="error">{{ documentsStore.error }}</div>
+    <div v-if="documentsStore.loading || !ready" class="editor-state muted">Открываем документ...</div>
+    <div v-else-if="documentsStore.error" class="editor-state error">{{ documentsStore.error }}</div>
 
     <template v-else>
       <div v-if="!canEdit" class="role-banner">
         Вы смотрите документ как участник: можно комментировать и предлагать правки. Редактирует владелец.
       </div>
 
-      <div class="editor-toolbar">
-        <input v-model="draft.title" class="title-input" type="text" :readonly="!canEdit" />
-        <div class="version-actions">
-          <div class="save-state">
-            <span v-if="canEdit && documentsStore.saving">Сохраняем черновик...</span>
-            <span v-else-if="canEdit">Черновик сохранён</span>
-            <span v-else>Черновик владельца</span>
-            <span class="dot">·</span>
-            <span>v{{ documentsStore.currentDocument?.headVersionNumber }}</span>
-            <span class="dot">·</span>
-            <span>{{ hasChangesSinceVersion ? 'Есть изменения после версии' : 'Версия актуальна' }}</span>
-          </div>
-          <button v-if="canEdit" type="button" :disabled="!hasChangesSinceVersion" @click="fixVersion">
-            Зафиксировать версию
-          </button>
-        </div>
-      </div>
+      <div class="editor-workspace">
+        <div class="editor-main">
+          <header class="editor-header">
+            <input
+              v-model="draft.title"
+              class="inline-title"
+              type="text"
+              placeholder="Без названия"
+              :readonly="!canEdit"
+            />
+            <div class="editor-actions">
+              <span class="version-badge">v{{ documentsStore.currentDocument?.headVersionNumber }}</span>
+              <span
+                class="change-badge"
+                :class="{ dirty: hasChangesSinceVersion }"
+              >
+                {{ hasChangesSinceVersion ? 'Есть изменения' : 'Актуально' }}
+              </span>
+              <button
+                v-if="canEdit"
+                type="button"
+                class="fix-btn"
+                :disabled="!hasChangesSinceVersion"
+                @click="fixVersion"
+              >
+                Зафиксировать
+              </button>
+              <button
+                type="button"
+                class="ribbon-btn sidebar-toggle"
+                :class="{ active: rightOpen }"
+                title="Панель замечаний"
+                @click="toggleRight"
+              >
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M2 2.5A.5.5 0 0 1 2.5 2h11a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-.5.5h-11a.5.5 0 0 1-.5-.5v-11zM3 3v10h4.5V3H3zm5.5 0V13H13V3H8.5z" />
+                </svg>
+              </button>
+            </div>
+          </header>
 
-      <div class="editor-layout">
-        <section class="workspace-column">
-          <div class="tabbar">
+          <div class="tabbar editor-tabs">
             <button type="button" :class="{ active: mainTab === 'visual' }" @click="mainTab = 'visual'">
               Visual
             </button>
             <button type="button" :class="{ active: mainTab === 'markdown' }" @click="mainTab = 'markdown'">
               Markdown
             </button>
+            <span class="save-indicator">{{ saveStatus }}</span>
           </div>
 
-          <VisualEditor
-            v-if="mainTab === 'visual'"
-            v-model="draft.content"
-            :readonly="!canEdit"
-            @selection-change="handleSelection"
-          />
-          <MarkdownEditor
-            v-else
-            v-model="draft.content"
-            :readonly="!canEdit"
-            :selected-range="selectedRange"
-            @selection-change="handleSelection"
-          />
-        </section>
+          <div class="editor-body">
+            <VisualEditor
+              v-if="mainTab === 'visual'"
+              v-model="draft.content"
+              :readonly="!canEdit"
+              @selection-change="handleSelection"
+            />
+            <MarkdownEditor
+              v-else
+              v-model="draft.content"
+              :readonly="!canEdit"
+              :selected-range="selectedRange"
+              @selection-change="handleSelection"
+            />
+          </div>
+        </div>
 
-        <aside class="workspace-sidebar">
+        <aside class="sidebar-right" :class="{ collapsed: !rightOpen }">
           <div class="tabbar">
             <button type="button" :class="{ active: sideTab === 'review' }" @click="sideTab = 'review'">
               Замечания
@@ -236,167 +268,151 @@ async function restoreVersion(versionId) {
 </template>
 
 <style scoped>
-:global(.main) {
-  max-width: none;
-  padding: 36px clamp(18px, 4vw, 80px);
+.editor-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
 }
 
-.editor-page {
-  min-width: 0;
+.editor-state {
+  margin: 24px;
 }
 
 .role-banner {
-  background: #eff4ff;
-  border: 1px solid #c7d7fe;
-  border-radius: 8px;
-  color: #3538cd;
-  margin-bottom: 14px;
-  padding: 12px 16px;
+  background: rgba(127, 109, 242, 0.12);
+  border-bottom: 1px solid rgba(127, 109, 242, 0.3);
+  color: var(--interactive-accent-hover);
+  font-size: 13px;
+  padding: 8px 16px;
 }
 
-.editor-toolbar {
-  align-items: center;
+.editor-workspace {
   display: grid;
-  gap: 18px;
-  grid-template-columns: minmax(320px, 700px) minmax(360px, 1fr);
-  margin-bottom: 18px;
+  flex: 1;
+  grid-template-columns: 1fr auto;
+  min-height: 0;
 }
 
-.title-input {
-  background: #ffffff;
-  border: 1px solid #d7dce5;
-  border-radius: 8px;
-  color: #0f172a;
-  font-size: 28px;
-  font-weight: 800;
-  min-height: 62px;
-  padding: 12px 16px;
-  width: 100%;
+.editor-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
 }
 
-.title-input:read-only {
-  background: #f8fafc;
-}
-
-.version-actions {
-  align-items: center;
+.editor-header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--background-modifier-border);
   display: flex;
   gap: 16px;
-  justify-content: flex-end;
-  min-width: 0;
+  justify-content: space-between;
+  padding: 20px 32px 12px;
 }
 
-.save-state {
-  color: #667085;
+.inline-title {
+  background: transparent;
+  border: 0;
+  color: var(--text-normal);
+  flex: 1;
+  font-size: 2em;
+  font-weight: 700;
+  line-height: 1.2;
+  min-width: 0;
+  outline: none;
+  padding: 0;
+}
+
+.inline-title::placeholder {
+  color: var(--text-faint);
+}
+
+.inline-title:read-only {
+  cursor: default;
+}
+
+.editor-actions {
+  align-items: center;
   display: flex;
-  flex-wrap: wrap;
+  flex-shrink: 0;
   gap: 8px;
-  justify-content: flex-end;
-  min-width: 0;
+  padding-top: 6px;
 }
 
-.dot {
-  color: #98a2b3;
+.version-badge,
+.change-badge {
+  color: var(--text-faint);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
-.version-actions button {
-  background: #4f7df3;
-  border-radius: 8px;
-  box-shadow: 0 8px 18px rgba(79, 125, 243, 0.2);
-  color: #ffffff;
-  flex: 0 0 auto;
-  min-height: 52px;
-  padding: 0 20px;
+.change-badge.dirty {
+  color: var(--color-orange);
 }
 
-.version-actions button:disabled {
-  box-shadow: none;
+.fix-btn {
+  font-size: 12px;
+  min-height: 28px;
+  padding: 0 10px;
 }
 
-.editor-layout {
-  align-items: stretch;
-  display: grid;
-  gap: 18px;
-  grid-template-columns: minmax(0, 1fr) 450px;
+.sidebar-toggle {
+  margin-left: 4px;
 }
 
-.workspace-column,
-.workspace-sidebar {
-  background: #ffffff;
-  border: 1px solid #e1e5eb;
-  border-radius: 8px;
-  min-width: 0;
+.editor-tabs {
+  position: relative;
+}
+
+.save-indicator {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin-left: auto;
+  padding-right: 8px;
+  white-space: nowrap;
+}
+
+.editor-body {
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
-.workspace-sidebar {
-  align-self: start;
+.sidebar-right {
+  background: var(--background-secondary);
+  border-left: 1px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  transition: width 0.15s ease, opacity 0.15s ease;
+  width: var(--right-sidebar-width);
 }
 
-.tabbar {
-  align-items: center;
-  background: #f8fafc;
-  border-bottom: 1px solid #e1e5eb;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  padding: 10px;
-}
-
-.tabbar button {
-  background: transparent;
-  border-radius: 7px;
-  color: #344054;
-  min-height: 42px;
-  padding: 0 14px;
-}
-
-.tabbar button.active {
-  background: #ffffff;
-  box-shadow: inset 0 0 0 1px #cfd6e2;
-  color: #0f172a;
-}
-
-@media (max-width: 1180px) {
-  :global(.main) {
-    padding: 24px 18px;
-  }
-
-  .editor-toolbar,
-  .editor-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .version-actions {
-    justify-content: space-between;
-  }
+.sidebar-right.collapsed {
+  border-left: 0;
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
 }
 
 @media (max-width: 720px) {
-  .editor-toolbar {
-    gap: 12px;
-  }
-
-  .title-input {
-    font-size: 24px;
-    min-height: 50px;
-  }
-
-  .version-actions {
-    align-items: stretch;
+  .editor-header {
     flex-direction: column;
+    padding: 16px;
   }
 
-  .save-state {
-    justify-content: flex-start;
+  .editor-actions {
+    flex-wrap: wrap;
+    padding-top: 0;
   }
 
-  .version-actions button {
-    width: 100%;
-  }
-
-  .editor-layout {
-    gap: 14px;
+  .sidebar-right:not(.collapsed) {
+    bottom: 0;
+    position: absolute;
+    right: 0;
+    top: 0;
+    z-index: 10;
   }
 }
 </style>

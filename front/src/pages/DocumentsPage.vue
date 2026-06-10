@@ -1,59 +1,38 @@
-<script setup>
-import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { useDocumentsStore } from '../stores/documentsStore'
-import { useUserStore } from '../stores/userStore'
-
-const router = useRouter()
-const documentsStore = useDocumentsStore()
-const userStore = useUserStore()
-const title = ref('')
-
-onMounted(() => {
-  documentsStore.loadDocuments(userStore.actor)
-})
-
-async function createDocument() {
-  const document = await documentsStore.createDocument(userStore.actor, {
-    title: title.value,
-    content: `# ${title.value || 'Untitled document'}\n\nStart writing here.\n`,
-  })
-
-  title.value = ''
-  router.push({ name: 'editor', params: { id: document.id } })
-}
-</script>
-
 <template>
-  <section class="documents-page">
-    <div class="page-heading">
-      <div>
-        <p class="eyebrow">Workspace</p>
-        <h1>Документы</h1>
-      </div>
-      <form class="create-form" @submit.prevent="createDocument">
-        <input v-model="title" type="text" placeholder="Название документа" />
-        <button type="submit">Создать</button>
-      </form>
-    </div>
-
-    <p v-if="documentsStore.loading" class="muted">Загружаем документы...</p>
-    <p v-else-if="documentsStore.error" class="error">{{ documentsStore.error }}</p>
-
-    <div v-else class="document-grid">
-      <RouterLink
-        v-for="document in documentsStore.documents"
-        :key="document.id"
-        class="document-card"
-        :to="{ name: 'editor', params: { id: document.id } }"
-      >
-        <h2>{{ document.title }}</h2>
-        <p>{{ document.excerpt || 'Пустой документ' }}</p>
-        <span>
-          v{{ document.headVersionNumber }} · обновлён
-          {{ new Date(document.updatedAt).toLocaleString() }}
-        </span>
-      </RouterLink>
+  <section class="welcome-page">
+    <div class="welcome-content">
+      <p class="eyebrow">CoDraft</p>
+      <h1>Выберите документ</h1>
+      <p class="welcome-hint">Откройте документ в списке слева или создайте новый.</p>
     </div>
   </section>
 </template>
+
+<style scoped>
+.welcome-page {
+  align-items: center;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  padding: 24px;
+}
+
+.welcome-content {
+  max-width: 420px;
+  text-align: center;
+}
+
+.welcome-content h1 {
+  color: var(--text-normal);
+  font-size: 28px;
+  font-weight: 600;
+  margin: 8px 0 12px;
+}
+
+.welcome-hint {
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0;
+}
+</style>

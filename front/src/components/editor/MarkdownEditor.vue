@@ -40,9 +40,8 @@ function updateSelection() {
 
 <template>
   <section class="markdown-editor">
-    <div class="pane-heading">
-      <h2>Markdown</h2>
-      <span v-if="selectedRange">Выбрано: {{ selectedRange.anchorText.length }} симв.</span>
+    <div v-if="selectedRange" class="selection-hint">
+      Выбрано: {{ selectedRange.anchorText.length }} симв.
     </div>
     <textarea
       ref="textarea"
@@ -59,46 +58,38 @@ function updateSelection() {
 
 <style scoped>
 .markdown-editor {
-  background: #ffffff;
-}
-
-.pane-heading {
-  align-items: center;
-  border-bottom: 1px solid #e1e5eb;
   display: flex;
-  justify-content: space-between;
-  min-height: 52px;
-  padding: 0 16px;
+  flex-direction: column;
+  height: 100%;
 }
 
-.pane-heading h2 {
-  font-size: 13px;
-  letter-spacing: 0.04em;
-  margin: 0;
-  text-transform: uppercase;
-}
-
-.pane-heading span {
-  color: #667085;
+.selection-hint {
+  border-bottom: 1px solid var(--background-modifier-border);
+  color: var(--text-faint);
+  font-size: 11px;
+  padding: 4px 32px;
 }
 
 .markdown-input {
+  background: transparent;
   border: 0;
-  color: #1f2937;
-  display: block;
+  color: var(--text-normal);
+  flex: 1;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.7;
-  min-height: calc(100vh - 294px);
+  min-height: 0;
   outline: none;
-  padding: 24px;
-  resize: vertical;
+  padding: 8px 32px 32px;
+  resize: none;
   width: 100%;
 }
 
 @media (max-width: 720px) {
-  .markdown-input {
-    min-height: 430px;
+  .markdown-input,
+  .selection-hint {
+    padding-left: 16px;
+    padding-right: 16px;
   }
 }
 </style>
