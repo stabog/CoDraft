@@ -4,6 +4,10 @@ defineProps({
     type: Array,
     default: () => [],
   },
+  canRestore: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 defineEmits(['restore'])
@@ -20,10 +24,12 @@ defineEmits(['restore'])
 
     <div v-else class="version-list">
       <article v-for="version in versions" :key="version.id" class="version-item">
-        <strong>{{ version.summary || 'Версия' }}</strong>
-        <span>{{ version.authorName }} · {{ new Date(version.createdAt).toLocaleString() }}</span>
-        <span>{{ version.commentsSnapshot?.length || 0 }} комментариев в снимке</span>
-        <button type="button" class="ghost-button" @click="$emit('restore', version.id)">
+        <strong>v{{ version.number }} — {{ version.summary || 'Версия' }}</strong>
+        <span>{{ version.author.name }} · {{ new Date(version.createdAt).toLocaleString() }}</span>
+        <span v-if="version.incorporatedEditIds?.length">
+          Учтено правок: {{ version.incorporatedEditIds.length }}
+        </span>
+        <button v-if="canRestore" type="button" class="ghost-button" @click="$emit('restore', version.id)">
           Восстановить в черновик
         </button>
       </article>

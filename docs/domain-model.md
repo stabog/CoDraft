@@ -7,112 +7,133 @@ Document
   ├── headVersion     последняя зафиксированная версия
   ├── draft           текущая рабочая копия (title + content)
   ├── versions[]      immutable, линейная main-линия
-  ├── proposals[]     предложения правок (owner hub)
-  └── comments[]      к конкретной версии
+  ├── edits[]         правки (owner hub)
+  └── comments[]      замечания к версии (обсуждение)
 ```
+
+**Замечания** в продукте — два смысла:
+
+| Смысл | Сущность | Действие owner |
+|-------|----------|----------------|
+| **Правка** | `Edit` | Применить к draft или отклонить |
+| **Комментарий** | `Comment` | Учесть при редактировании или отклонить (`resolution`) |
+
+Единая панель «Ревью» в UI — проекция `Edit[]` + `Comment[]`, не отдельная сущность в хранилище.
 
 ## Document
 
 | Поле | Описание |
 |------|----------|
 | `id` | Идентификатор |
-| `createdBy` | Создатель |
-| `ownerId` | Владелец (для owner hub; может совпадать с создателем) |
+| `createdBy` | `UserRef` |
+| `ownerId` | Владелец (owner hub) |
 | `collaborationMode` | `async` \| `live` (пока только async) |
-| `asyncWorkflow` | `handoff` \| `owner_hub` |
+| `asyncWorkflow` | `handoff` \| `owner_hub` (MVP: `owner_hub`) |
 | `headVersionId` | Tip main-линии |
 | `draft` | `{ title, content, updatedAt, updatedBy }` |
-| `currentActorId` | У кого ход (только handoff) |
+| `currentActorId` | Только handoff; в MVP не используется |
 
-При создании документа сразу создаётся **v1** (начальная версия), draft = содержимое v1.
+При создании документа сразу создаётся **v1**, draft = содержимое v1.
 
 ## Version (canonical, immutable)
-
-Версии только **добавляются**, не изменяются. Main-линия линейная: `parentVersionId` → предыдущая (для v1 — null).
 
 | Поле | Описание |
 |------|----------|
 | `id`, `documentId` | |
-| `parentVersionId` | Предыдущая версия в main |
-| `number` | Порядковый номер (1, 2, 3…) |
-| `authorId`, `authorName` | Кто зафиксировал |
+| `parentVersionId` | `null` для v1 |
+| `number` | 1, 2, 3… |
+| `author` | `UserRef` |
 | `title`, `content` | Полный снимок |
-| `summary` | «Что сделано в этом раунде» |
+| `summary` | Что сделано в раунде |
+| `incorporatedEditIds` | Какие правки учтены при фиксации |
 | `createdAt` | |
-| `handoff` | Только handoff: `{ toUserId, note? }` |
-| `incorporatedProposalIds` | Только owner hub: какие proposals учтены в v2 |
+| `handoff` | Зарезервировано для handoff |
 
-**Фиксация версии** = снимок draft + метаданные. Текст draft после фиксации не меняется.
+**Фиксация** = снимок draft + метаданные. Draft после фиксации не меняется.
 
-## Proposal (owner hub)
+## Edit (правка)
 
-Параллельные правки **не** попадают в main как sibling-версии. Contributors отправляют предложения.
+Параллельные правки не попадают в main как sibling-версии.
 
 | Поле | Описание |
 |------|----------|
 | `id`, `documentId` | |
 | `baseVersionId` | От какой версии отталкивались |
-| `authorId`, `authorName` | |
-| `title`, `content` | Полный предложенный текст |
+| `author` | `UserRef` |
+| `scope` | `document` \| `range` |
 | `summary` | Пояснение автора |
-| `status` | `pending` \| `withdrawn` \| `superseded` |
+| `status` | `pending` \| `applied` \| `rejected` \| `superseded` |
 | `createdAt` | |
 
-При фиксации owner новой версии proposals к старому base → `superseded`.
+**scope = document** — полная правка:
 
-## Comment
+| Поле | Описание |
+|------|----------|
+| `title` | |
+| `content` | |
 
-Комментарии привязаны к **версии**, не к draft. Якорь — позиция в тексте **этой** версии (immutable контекст).
+**scope = range** — правка фрагмента:
+
+| Поле | Описание |
+|------|----------|
+| `anchor` | `{ from, to, quotedText }` в тексте base-версии |
+| `suggestedText` | Замена фрагмента |
+
+**Статусы:**
+
+| Статус | Смысл |
+|--------|--------|
+| `pending` | Ждёт решения owner |
+| `applied` | Owner применил к draft |
+| `rejected` | Owner отклонил |
+| `superseded` | Раунд закрыт новой версией |
+
+При `fixVersion` pending/applied/rejected edits с `baseVersionId = head` → `superseded` (кроме явно указанных в `incorporatedEditIds` — они уже учтены в summary раунда).
+
+## Comment (комментарий)
+
+Привязан к **версии**, якорь — в тексте этой версии.
 
 | Поле | Описание |
 |------|----------|
 | `id`, `documentId` | |
-| `targetVersionId` | К какой версии относится |
-| `authorId`, `authorName` | |
+| `targetVersionId` | |
+| `author` | `UserRef` |
 | `anchor` | `{ from, to, quotedText }` |
 | `body` | |
 | `status` | `open` \| `resolved` \| `outdated` |
+| `resolution` | `acknowledged` \| `rejected` — только при `resolved` |
 | `replies[]` | |
 | `createdAt`, `resolvedAt` | |
 
-Комментарии не переносятся между версиями — остаются историческим фактом ревью этой версии.
+Комментарий не применяется к тексту автоматически.
 
-## Права (MVP)
+## Права (owner hub, MVP)
 
-### Handoff
-
-| Действие | currentActor | Остальные |
-|----------|--------------|-----------|
-| Редактировать draft | да | нет |
-| Зафиксировать версию + передать ход | да | нет |
-| Комментировать версии | да | да |
-| Просмотр draft | да | да (read-only) |
-
-### Owner hub
-
-| Действие | owner | Остальные |
+| Действие | owner | остальные |
 |----------|-------|-----------|
 | Редактировать draft | да | нет |
 | Зафиксировать версию | да | нет |
-| Отправить proposal | — | да |
-| Комментировать версии | да | да |
-| Просмотр head | да | да |
+| Отправить правку (`submitEdit`) | нет | да |
+| Применить / отклонить правку | да | нет |
+| Комментировать | да | да |
+| Resolve комментария | да | автор (MVP: все) |
 
-Позже: capability `canComment` без `canEdit` (comment-only).
+Capabilities: `canEditDraft`, `canFixVersion`, `canSubmitEdit`, `canApplyEdit`, `canComment`.
 
 ## Diff
 
-- Хранить полные снимки версий; diff **вычислять** при просмотре.
-- Типичные сравнения: `parent → child`, `head ↔ proposal`, `draft ↔ head` (незафиксированные правки).
+Полные снимки в версиях; diff вычисляется на клиенте (`parent → child`, `head ↔ edit`, `draft ↔ head`).
 
 ## Инварианты
 
-1. v1 создаётся вместе с документом.
-2. Версии в main неизменяемы.
-3. Только уполномоченный участник создаёт canonical version (actor в handoff, owner в hub).
-4. Комментарий всегда имеет `targetVersionId`.
-5. Proposal всегда имеет `baseVersionId`.
+1. v1 создаётся сместе с документом.
+2. Версии immutable, линейная main.
+3. Canonical version создаёт только owner (hub).
+4. `Comment.targetVersionId` обязателен.
+5. `Edit.baseVersionId` обязателен.
+6. `Edit.scope = document` → есть `title` + `content`; `range` → `anchor` + `suggestedText`.
 
-## Связь с прототипом
+## Контракт API
 
-Текущий `localDocumentsApi.js` — упрощённый зачаток: один draft, версии без parent/handoff/proposals, комментарии на документ без `targetVersionId`. См. [decisions.md](./decisions.md).
+[api-sketch.md](./api-sketch.md)

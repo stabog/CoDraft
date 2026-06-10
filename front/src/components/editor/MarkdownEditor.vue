@@ -7,6 +7,10 @@ defineProps({
     type: Object,
     default: null,
   },
+  readonly: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['selection-change'])
@@ -45,6 +49,7 @@ function updateSelection() {
       v-model="model"
       class="markdown-input"
       spellcheck="true"
+      :readonly="readonly"
       @mouseup="updateSelection"
       @keyup="updateSelection"
       @select="updateSelection"

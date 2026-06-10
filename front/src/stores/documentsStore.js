@@ -6,18 +6,28 @@ export const useDocumentsStore = defineStore('documents', {
     documents: [],
     currentDocument: null,
     versions: [],
+    edits: [],
     comments: [],
     loading: false,
     saving: false,
     error: '',
   }),
 
+  getters: {
+    capabilities: (state) => state.currentDocument?.capabilities ?? null,
+    headVersion: (state) => state.versions[0] ?? null,
+  },
+
   actions: {
-    async loadDocuments() {
+    actorFrom(userStore) {
+      return userStore.actor
+    },
+
+    async loadDocuments(actor) {
       this.loading = true
       this.error = ''
       try {
-        this.documents = await documentsApi.list()
+        this.documents = await documentsApi.listDocuments(actor)
       } catch (error) {
         this.error = error.message
       } finally {
@@ -25,25 +35,21 @@ export const useDocumentsStore = defineStore('documents', {
       }
     },
 
-    async createDocument(payload) {
-      const document = await documentsApi.create(payload)
-      await this.loadDocuments()
+    async createDocument(actor, payload) {
+      const document = await documentsApi.createDocument(actor, payload)
+      await this.loadDocuments(actor)
       return document
     },
 
-    async loadDocument(id) {
+    async loadEditorBundle(documentId, actor) {
       this.loading = true
       this.error = ''
       try {
-        const [document, versions, comments] = await Promise.all([
-          documentsApi.get(id),
-          documentsApi.listVersions(id),
-          documentsApi.listComments(id),
-        ])
-
-        this.currentDocument = document
-        this.versions = versions
-        this.comments = comments
+        const bundle = await documentsApi.getEditorBundle(documentId, actor)
+        this.currentDocument = bundle.document
+        this.versions = bundle.versions
+        this.edits = bundle.edits
+        this.comments = bundle.comments
       } catch (error) {
         this.error = error.message
       } finally {
@@ -51,40 +57,66 @@ export const useDocumentsStore = defineStore('documents', {
       }
     },
 
-    async saveDocument(id, payload) {
+    async updateDraft(documentId, actor, payload) {
       this.saving = true
       try {
-        this.currentDocument = await documentsApi.update(id, payload)
-        this.documents = await documentsApi.list()
+        this.currentDocument = await documentsApi.updateDraft(documentId, actor, payload)
+        this.documents = await documentsApi.listDocuments(actor)
       } finally {
         this.saving = false
       }
     },
 
-    async createVersion(documentId, payload) {
-      const version = await documentsApi.createVersion(documentId, payload)
-      this.versions = await documentsApi.listVersions(documentId)
-      this.currentDocument = await documentsApi.get(documentId)
-      return version
+    async fixVersion(documentId, actor, payload) {
+      const result = await documentsApi.fixVersion(documentId, actor, payload)
+      this.currentDocument = result.document
+      this.versions = await documentsApi.listVersions(documentId, actor)
+      this.edits = await documentsApi.listEdits(documentId, actor, {
+        baseVersionId: result.document.headVersionId,
+        status: 'pending',
+      })
+      return result.version
     },
 
-    async restoreVersion(documentId, versionId, payload) {
-      this.currentDocument = await documentsApi.restoreVersion(documentId, versionId, payload)
-      this.versions = await documentsApi.listVersions(documentId)
+    async restoreVersionToDraft(documentId, versionId, actor) {
+      this.currentDocument = await documentsApi.restoreVersionToDraft(documentId, versionId, actor)
     },
 
-    async addComment(documentId, payload) {
-      const comment = await documentsApi.addComment(documentId, payload)
+    async submitEdit(documentId, actor, payload) {
+      const edit = await documentsApi.submitEdit(documentId, actor, payload)
+      this.edits = [edit, ...this.edits.filter((item) => item.id !== edit.id)]
+      return edit
+    },
+
+    async applyEdit(documentId, editId, actor) {
+      const result = await documentsApi.applyEdit(documentId, editId, actor)
+      this.currentDocument = result.document
+      this.edits = this.edits.map((item) => (item.id === editId ? result.edit : item))
+      return result
+    },
+
+    async rejectEdit(documentId, editId, actor) {
+      const edit = await documentsApi.rejectEdit(documentId, editId, actor)
+      this.edits = this.edits.map((item) => (item.id === editId ? edit : item))
+    },
+
+    async addComment(documentId, actor, payload) {
+      const comment = await documentsApi.addComment(documentId, actor, payload)
       this.comments = [comment, ...this.comments]
     },
 
-    async addReply(commentId, payload) {
-      const updated = await documentsApi.addReply(commentId, payload)
+    async addReply(commentId, actor, payload) {
+      const updated = await documentsApi.addCommentReply(commentId, actor, payload)
       this.comments = this.comments.map((item) => (item.id === commentId ? updated : item))
     },
 
-    async setCommentStatus(commentId, status) {
-      const updated = await documentsApi.setCommentStatus(commentId, status)
+    async resolveComment(commentId, actor, resolution) {
+      const updated = await documentsApi.resolveComment(commentId, actor, { resolution })
+      this.comments = this.comments.map((item) => (item.id === commentId ? updated : item))
+    },
+
+    async reopenComment(commentId, actor) {
+      const updated = await documentsApi.reopenComment(commentId, actor)
       this.comments = this.comments.map((item) => (item.id === commentId ? updated : item))
     },
   },

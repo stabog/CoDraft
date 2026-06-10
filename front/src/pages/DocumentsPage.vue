@@ -10,14 +10,13 @@ const userStore = useUserStore()
 const title = ref('')
 
 onMounted(() => {
-  documentsStore.loadDocuments()
+  documentsStore.loadDocuments(userStore.actor)
 })
 
 async function createDocument() {
-  const document = await documentsStore.createDocument({
+  const document = await documentsStore.createDocument(userStore.actor, {
     title: title.value,
     content: `# ${title.value || 'Untitled document'}\n\nStart writing here.\n`,
-    authorName: userStore.name,
   })
 
   title.value = ''
@@ -50,7 +49,10 @@ async function createDocument() {
       >
         <h2>{{ document.title }}</h2>
         <p>{{ document.excerpt || 'Пустой документ' }}</p>
-        <span>Обновлен {{ new Date(document.updatedAt).toLocaleString() }}</span>
+        <span>
+          v{{ document.headVersionNumber }} · обновлён
+          {{ new Date(document.updatedAt).toLocaleString() }}
+        </span>
       </RouterLink>
     </div>
   </section>

@@ -84,6 +84,43 @@
 
 ---
 
+## ADR-010: Edit и Comment как два типа замечаний
+
+**Контекст:** В ревью нужно различать правку (можно применить) и комментарий (учесть или отклонить). Proposal как имя сущности смешивал смысл.
+
+**Решение:**
+
+- **Edit** (правка): `scope: document | range`, статусы `pending | applied | rejected | superseded`.
+- **Comment**: `resolution: acknowledged | rejected` при `resolved`.
+- Версия хранит `incorporatedEditIds` (не proposal).
+- API: `submitEdit`, `applyEdit`, `rejectEdit`, `resolveComment`.
+
+**Последствия:** Лента «Замечания» в UI — проекция Edit + Comment, не отдельная сущность в storage.
+
+---
+
+## ADR-009: Owner hub — первый реализуемый async-подрежим
+
+**Контекст:** Два подрежима (handoff и owner hub) описаны в модели; в коде нужно начать с одного, чтобы не размывать MVP.
+
+**Решение:** Первый вертикальный срез в прототипе — **owner hub**:
+
+- создатель документа = `ownerId`;
+- только owner редактирует draft и фиксирует canonical-версии;
+- остальные участники комментируют версии и отправляют **proposals**;
+- owner сливает proposals в draft вручную, diff `head ↔ proposal` и `parent → child`;
+- `asyncWorkflow` по умолчанию `owner_hub`; выбор при создании документа — позже.
+
+**Handoff** — второй срез после стабилизации owner hub (общая модель версий и комментариев уже будет в коде).
+
+**Последствия:**
+
+- В прототипе сначала: proposals, панель входящих, `canEdit` / `canComment`, `incorporatedProposalIds` при фиксации.
+- Поля `currentActorId`, `handoff` на версии — в модели данных можно заложить, но UI и логика handoff не в первом срезе.
+- Новые документы в демо создаются как owner hub, пока нет переключателя подрежимов.
+
+---
+
 ## Отложено
 
 | Тема | Статус |
@@ -93,8 +130,9 @@
 | Чистый Open (DAG без owner) | Только по запросу |
 | 3-way auto-merge | Ручной merge owner в draft |
 | Смена asyncWorkflow после создания | Избегать; миграция сложна |
-| PHP backend / OpenAPI | Следующий этап после доменной модели |
+| Handoff (передача хода) | После owner hub в коде |
+| PHP backend / OpenAPI | После стабилизации local-адаптера по [api-sketch.md](./api-sketch.md) |
 
 ## Расхождение с прототипом `front/`
 
-Текущий код — демо-заготовка. Не отражает: `asyncWorkflow`, handoff, proposals, `targetVersionId`, линейный parent, разделение owner/contributor. Адаптер API (`documentsApi.js`) остаётся точкой подмены на HTTP.
+Реализовано: `codraft.state.v2`, owner hub, Edit/Comment, capabilities, `getEditorBundle`, ReviewPanel. Не реализовано: handoff, diff UI, margin-комментарии, range-edit из выделения, HTTP-адаптер.

@@ -79,6 +79,12 @@ a {
   width: 32px;
 }
 
+.dev-user-switcher {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
 .user-field {
   align-items: center;
   color: #6b7280;
@@ -87,6 +93,14 @@ a {
   gap: 10px;
 }
 
+.user-hint {
+  color: #9ca3af;
+  font-size: 12px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.user-select,
 .user-field input,
 .create-form input,
 .title-input,
@@ -97,6 +111,11 @@ a {
   color: #111827;
   min-height: 40px;
   padding: 8px 11px;
+}
+
+.user-select {
+  cursor: pointer;
+  min-width: 120px;
 }
 
 .main {

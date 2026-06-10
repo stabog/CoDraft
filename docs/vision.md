@@ -25,7 +25,7 @@
 - Diff между версиями, опционально merge предложений.
 - Без realtime-синхронизации на первом этапе.
 
-Подрежимы async описаны в [async-workflows.md](./async-workflows.md).
+Подрежимы async описаны в [async-workflows.md](./async-workflows.md). **Первый в коде:** owner hub ([ADR-009](./decisions.md#adr-009-owner-hub--первый-реализуемый-async-подрежим)).
 
 ### Live (как Google Docs) — отложено
 

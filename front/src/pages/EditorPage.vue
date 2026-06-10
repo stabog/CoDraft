@@ -1,9 +1,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import CommentPanel from '../components/comments/CommentPanel.vue'
 import MarkdownEditor from '../components/editor/MarkdownEditor.vue'
 import VisualEditor from '../components/editor/VisualEditor.vue'
+import ReviewPanel from '../components/review/ReviewPanel.vue'
 import VersionPanel from '../components/history/VersionPanel.vue'
 import { useDocumentsStore } from '../stores/documentsStore'
 import { useUserStore } from '../stores/userStore'
@@ -17,21 +17,24 @@ const draft = reactive({
   content: '',
 })
 const mainTab = ref('visual')
-const sideTab = ref('comments')
+const sideTab = ref('review')
 const selectedRange = ref(null)
 const saveTimer = ref(null)
 const lastSavedContent = ref('')
 const lastSavedTitle = ref('')
 const ready = ref(false)
 
-const latestVersion = computed(() => documentsStore.versions[0] || null)
+const capabilities = computed(() => documentsStore.capabilities)
+const headVersion = computed(() => documentsStore.headVersion)
+const canEdit = computed(() => capabilities.value?.canEditDraft ?? false)
+
 const hasChangesSinceVersion = computed(() => {
-  if (!latestVersion.value) return Boolean(draft.title.trim() || draft.content.trim())
-  return latestVersion.value.title !== draft.title || latestVersion.value.content !== draft.content
+  if (!headVersion.value) return Boolean(draft.title.trim() || draft.content.trim())
+  return headVersion.value.title !== draft.title || headVersion.value.content !== draft.content
 })
 
 onMounted(async () => {
-  await documentsStore.loadDocument(route.params.id)
+  await documentsStore.loadEditorBundle(route.params.id, userStore.actor)
   syncDraftFromStore()
   ready.value = true
 })
@@ -46,58 +49,91 @@ watch(
 )
 
 function syncDraftFromStore() {
-  if (!documentsStore.currentDocument) return
-  draft.title = documentsStore.currentDocument.title
-  draft.content = documentsStore.currentDocument.content
+  const doc = documentsStore.currentDocument
+  if (!doc?.draft) return
+  draft.title = doc.draft.title
+  draft.content = doc.draft.content
   lastSavedTitle.value = draft.title
   lastSavedContent.value = draft.content
 }
 
 function scheduleSave() {
-  if (!ready.value) return
+  if (!ready.value || !canEdit.value) return
 
   clearTimeout(saveTimer.value)
   if (draft.title === lastSavedTitle.value && draft.content === lastSavedContent.value) return
 
   saveTimer.value = setTimeout(async () => {
-    await documentsStore.saveDocument(route.params.id, {
+    await documentsStore.updateDraft(route.params.id, userStore.actor, {
       title: draft.title,
       content: draft.content,
-      authorName: userStore.name,
     })
     lastSavedTitle.value = draft.title
     lastSavedContent.value = draft.content
   }, 900)
 }
 
-async function createVersion() {
+async function fixVersion() {
+  if (!canEdit.value) return
+
+  const summary = window.prompt('Кратко опишите, что изменилось в этой версии:')
+  if (!summary?.trim()) return
+
   clearTimeout(saveTimer.value)
-  await documentsStore.createVersion(route.params.id, {
+  await documentsStore.updateDraft(route.params.id, userStore.actor, {
     title: draft.title,
     content: draft.content,
-    authorName: userStore.name,
   })
+  await documentsStore.fixVersion(route.params.id, userStore.actor, { summary: summary.trim() })
   lastSavedTitle.value = draft.title
   lastSavedContent.value = draft.content
 }
 
 function handleSelection(range) {
-  selectedRange.value = range
+  if (!range) {
+    selectedRange.value = null
+    return
+  }
+
+  selectedRange.value = {
+    anchorFrom: range.anchorFrom,
+    anchorTo: range.anchorTo,
+    anchorText: range.anchorText,
+    anchor: {
+      from: range.anchorFrom,
+      to: range.anchorTo,
+      quotedText: range.anchorText,
+    },
+  }
 }
 
 async function addComment(body) {
-  if (!selectedRange.value?.text?.trim()) return
+  if (!selectedRange.value?.anchor || !headVersion.value) return
 
-  await documentsStore.addComment(route.params.id, {
-    ...selectedRange.value,
+  await documentsStore.addComment(route.params.id, userStore.actor, {
+    targetVersionId: headVersion.value.id,
+    anchor: selectedRange.value.anchor,
     body,
-    authorName: userStore.name,
   })
   selectedRange.value = null
 }
 
+async function submitEdit(payload) {
+  if (!headVersion.value) return
+
+  await documentsStore.submitEdit(route.params.id, userStore.actor, {
+    baseVersionId: headVersion.value.id,
+    ...payload,
+  })
+}
+
+async function applyEdit(editId) {
+  await documentsStore.applyEdit(route.params.id, editId, userStore.actor)
+  syncDraftFromStore()
+}
+
 async function restoreVersion(versionId) {
-  await documentsStore.restoreVersion(route.params.id, versionId, { authorName: userStore.name })
+  await documentsStore.restoreVersionToDraft(route.params.id, versionId, userStore.actor)
   syncDraftFromStore()
   mainTab.value = 'visual'
   await nextTick()
@@ -110,16 +146,23 @@ async function restoreVersion(versionId) {
     <div v-else-if="documentsStore.error" class="error">{{ documentsStore.error }}</div>
 
     <template v-else>
+      <div v-if="!canEdit" class="role-banner">
+        Вы смотрите документ как участник: можно комментировать и предлагать правки. Редактирует владелец.
+      </div>
+
       <div class="editor-toolbar">
-        <input v-model="draft.title" class="title-input" type="text" />
+        <input v-model="draft.title" class="title-input" type="text" :readonly="!canEdit" />
         <div class="version-actions">
           <div class="save-state">
-            <span v-if="documentsStore.saving">Сохраняем черновик...</span>
-            <span v-else>Черновик сохранен</span>
+            <span v-if="canEdit && documentsStore.saving">Сохраняем черновик...</span>
+            <span v-else-if="canEdit">Черновик сохранён</span>
+            <span v-else>Черновик владельца</span>
+            <span class="dot">·</span>
+            <span>v{{ documentsStore.currentDocument?.headVersionNumber }}</span>
             <span class="dot">·</span>
             <span>{{ hasChangesSinceVersion ? 'Есть изменения после версии' : 'Версия актуальна' }}</span>
           </div>
-          <button type="button" :disabled="!hasChangesSinceVersion" @click="createVersion">
+          <button v-if="canEdit" type="button" :disabled="!hasChangesSinceVersion" @click="fixVersion">
             Зафиксировать версию
           </button>
         </div>
@@ -139,11 +182,13 @@ async function restoreVersion(versionId) {
           <VisualEditor
             v-if="mainTab === 'visual'"
             v-model="draft.content"
+            :readonly="!canEdit"
             @selection-change="handleSelection"
           />
           <MarkdownEditor
             v-else
             v-model="draft.content"
+            :readonly="!canEdit"
             :selected-range="selectedRange"
             @selection-change="handleSelection"
           />
@@ -151,24 +196,39 @@ async function restoreVersion(versionId) {
 
         <aside class="workspace-sidebar">
           <div class="tabbar">
-            <button type="button" :class="{ active: sideTab === 'comments' }" @click="sideTab = 'comments'">
-              Комментарии
+            <button type="button" :class="{ active: sideTab === 'review' }" @click="sideTab = 'review'">
+              Замечания
             </button>
             <button type="button" :class="{ active: sideTab === 'history' }" @click="sideTab = 'history'">
               История
             </button>
           </div>
 
-          <CommentPanel
-            v-if="sideTab === 'comments'"
+          <ReviewPanel
+            v-if="sideTab === 'review'"
             :comments="documentsStore.comments"
+            :edits="documentsStore.edits"
             :selected-range="selectedRange"
-            :author-name="userStore.name"
+            :head-version-id="headVersion?.id"
+            :can-comment="capabilities?.canComment"
+            :can-submit-edit="capabilities?.canSubmitEdit"
+            :can-apply-edit="capabilities?.canApplyEdit"
+            :draft-title="draft.title"
+            :draft-content="draft.content"
             @add-comment="addComment"
-            @add-reply="documentsStore.addReply"
-            @set-status="documentsStore.setCommentStatus"
+            @add-reply="(id, body) => documentsStore.addReply(id, userStore.actor, { body })"
+            @resolve-comment="(id, resolution) => documentsStore.resolveComment(id, userStore.actor, resolution)"
+            @reopen-comment="(id) => documentsStore.reopenComment(id, userStore.actor)"
+            @submit-edit="submitEdit"
+            @apply-edit="applyEdit"
+            @reject-edit="(id) => documentsStore.rejectEdit(route.params.id, id, userStore.actor)"
           />
-          <VersionPanel v-else :versions="documentsStore.versions" @restore="restoreVersion" />
+          <VersionPanel
+            v-else
+            :versions="documentsStore.versions"
+            :can-restore="canEdit"
+            @restore="restoreVersion"
+          />
         </aside>
       </div>
     </template>
@@ -183,6 +243,15 @@ async function restoreVersion(versionId) {
 
 .editor-page {
   min-width: 0;
+}
+
+.role-banner {
+  background: #eff4ff;
+  border: 1px solid #c7d7fe;
+  border-radius: 8px;
+  color: #3538cd;
+  margin-bottom: 14px;
+  padding: 12px 16px;
 }
 
 .editor-toolbar {
@@ -203,6 +272,10 @@ async function restoreVersion(versionId) {
   min-height: 62px;
   padding: 12px 16px;
   width: 100%;
+}
+
+.title-input:read-only {
+  background: #f8fafc;
 }
 
 .version-actions {

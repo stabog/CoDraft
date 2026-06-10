@@ -8,6 +8,12 @@ import { nord } from '@milkdown/theme-nord'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const model = defineModel({ type: String, default: '' })
+const props = defineProps({
+  readonly: {
+    type: Boolean,
+    default: false,
+  },
+})
 const emit = defineEmits(['selection-change'])
 
 const root = ref(null)
@@ -69,6 +75,7 @@ onMounted(async () => {
     .create()
 
   applyMarkdown(model.value)
+  setEditable(!props.readonly)
 })
 
 onBeforeUnmount(async () => {
@@ -81,6 +88,19 @@ watch(
   () => model.value,
   (markdown) => applyMarkdown(markdown),
 )
+
+watch(
+  () => props.readonly,
+  (value) => setEditable(!value),
+)
+
+function setEditable(editable) {
+  if (!editor.value) return
+  editor.value.action((ctx) => {
+    const view = ctx.get(editorViewCtx)
+    view.setProps({ editable: () => editable })
+  })
+}
 </script>
 
 <template>
