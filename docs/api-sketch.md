@@ -1,8 +1,10 @@
 # API sketch
 
-Контракт `documentsApi` для local- и HTTP-адаптера. См. [domain-model.md](./domain-model.md).
+Контракт `documentsApi` для local- и HTTP-адаптера. См. [domain-model.md](./domain-model.md), [ADR-016](./decisions.md#adr-016-единая-таблица-drafts-и-сессия-редактирования).
 
 **Actor:** `{ id, name }` из `userStore` (пока без auth). LLM — актор с id вроде `llm:…`.
+
+> **Прототип `front/`:** DTO ниже частично отражает целевую модель через `document.draft`, `activeEditorId`, `actorDrafts`. При выравнивании: session draft и per-actor drafts — из таблицы `drafts`; `activeEditorId` → держатель session draft; `currentActorId` — только handoff.
 
 ---
 
@@ -10,10 +12,11 @@
 
 1. Один интерфейс для local / HTTP.
 2. `capabilities` в `DocumentDetail` — UI не дублирует правила подрежима.
-3. Версии immutable.
+3. Версии immutable; **«Сохранить»** = `fixVersion` (новая version).
 4. Diff на клиенте.
 5. Ошибки: `{ code, message }`.
-6. **Round (по умолчанию):** `updateDraft` с захватом lock; `fixVersion` завершает раунд.
+6. **Round / handoff:** один session draft; занять / освободить; autosave в draft, не в version.
+7. **Owner hub:** draft per actor; submit → submission (`Edit` в DTO).
 
 ---
 
@@ -23,9 +26,14 @@
 
 `{ id: string, name: string }`
 
-### Draft
+### Draft (DTO / projection)
 
-`{ title, content, updatedAt, updatedBy: UserRef }`
+В API по-прежнему отдаётся как вложенный объект для удобства UI. В persistence — строка в `drafts`:
+
+`{ id?, baseVersionId, actorId, title, content, updatedAt, updatedBy?: UserRef, needsRebase?: boolean }`
+
+- **Session draft** (round/handoff): один на документ; `actorId` = держатель сессии.
+- **Owner hub:** отдельный draft на актора; owner — канон в работе.
 
 ### Capabilities (round)
 
@@ -53,9 +61,10 @@
   collaborationMode,
   asyncWorkflow,              // 'round' | 'handoff' | 'owner_hub'
   headVersionId, headVersionNumber,
-  draft,
-  activeEditorId: UserRef | null,   // round
-  currentActorId?: string,          // handoff
+  draft,                            // session draft (round/handoff) или draft owner'а (hub)
+  sessionHolderId?: UserRef | null, // целевое: держатель session draft; прототип: activeEditorId
+  activeEditorId?: UserRef | null,  // прототип round; → sessionHolderId
+  currentActorId?: string,          // handoff only
   capabilities,
   createdAt
 }
@@ -135,12 +144,13 @@
 | `getEditorBundle(documentId, actor)` | EditorBundle |
 | `getEffectiveContent(documentId, actor)` | EffectiveContent для LLM |
 
-### Draft (round)
+### Session draft (round / handoff)
 
 | Метод | Описание |
 |-------|----------|
-| `updateDraft(documentId, actor, { title?, content? })` | Round: захват `activeEditorId` при `null`; правки только при своём lock. `CONFLICT`, если lock у другого |
-| `releaseEditLock(documentId, actor, { discardChanges? })` | Сброс lock; по умолчанию `discardChanges: true` — черновик = head |
+| `acquireEditLock(documentId, actor)` | Занять session draft от head. Round: если свободен. Handoff: только `currentActorId`. `CONFLICT`, если занят |
+| `updateDraft(documentId, actor, { title?, content? })` | Autosave в session draft; только держатель |
+| `releaseEditLock(documentId, actor, { discardChanges? })` | Освободить session draft; по умолчанию `discardChanges: true` — content = head |
 
 ### Draft (owner hub)
 
@@ -156,8 +166,8 @@
 |-------|----------|
 | `listVersions(documentId, actor)` | number desc |
 | `getVersion(documentId, versionId, actor)` | |
-| `fixVersion(documentId, actor, { summary?, incorporatedEditIds? })` | Снимок draft → vN+1; `summary` опционально (по умолчанию «Версия N»; позже LLM); round: `activeEditorId = null` |
-| `restoreVersionToDraft(documentId, versionId, actor)` | Без новой версии; round: захват lock |
+| `fixVersion(documentId, actor, { summary?, incorporatedEditIds? })` | Session draft или draft owner'а → vN+1; round/handoff: освободить session draft |
+| `restoreVersionToDraft(documentId, versionId, actor)` | Без новой version; round/handoff: занять session draft с текстом version |
 
 ### Правки (Edit, owner hub)
 
@@ -173,7 +183,7 @@
 
 | Метод | Описание |
 |-------|----------|
-| `handoff(documentId, actor, { to, summary })` | fixVersion + смена `currentActorId` |
+| `handoff(documentId, actor, { to, summary })` | `fixVersion` + `currentActorId := to` («Сохранить и передать») |
 
 ### Комментарии
 
@@ -226,4 +236,5 @@
 | `restoreVersion` | `restoreVersionToDraft` |
 | `proposal` | `edit` |
 
-Storage: `codraft.state.v3` (прототип); целевой default `asyncWorkflow: 'round'`.
+Storage (прототип): `codraft.state.v4` — `document.draft`, `actorDrafts`, `activeEditorId`.  
+Целевой persistence: `documents`, `versions`, `drafts`, `submissions`, `comments` ([ADR-016](./decisions.md#adr-016-единая-таблица-drafts-и-сессия-редактирования)).

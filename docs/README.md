@@ -17,16 +17,18 @@ CoDraft — рабочее пространство для Markdown-докуме
 - **Режим:** async (как Word), не live (как Google Docs); content — **md** в async ([ADR-012](./decisions.md#adr-012-редактор-и-просмотр-правок-async-mvp-на-md))
 - **Базовый подрежим:** [round](./async-workflows.md#round-по-раундам) — один редактор за раз, фиксация по раундам, документ как память (в т.ч. LLM) ([ADR-015](./decisions.md#adr-015-round--базовый-async-подрежим))
 - **Расширения (опционально):** [handoff](./async-workflows.md#handoff-расширение) — очередь и передача хода; [owner hub](./async-workflows.md#owner-hub-расширение) — арбитраж при 3+ ([ADR-013](./decisions.md#adr-013-handoff-и-owner-hub-как-расширения-round))
-- **Основа:** head + draft + `fixVersion` = конец раунда ([ADR-011](./decisions.md#adr-011-head-draft-и-submit))
+- **Основа:** head + drafts + `fixVersion` = публикация version ([ADR-011](./decisions.md#adr-011-head-draft-и-submit), [ADR-016](./decisions.md#adr-016-единая-таблица-drafts-и-сессия-редактирования))
+- **Хранение (целевое):** единая `drafts`; round/handoff — один session draft; handoff — `currentActorId`; hub — draft per actor + submissions
 
 ## План (актуальный)
 
 1. ~~Edit + Comment в прототипе~~ — [ADR-010](./decisions.md#adr-010-edit-и-comment-как-два-типа-замечаний)
-2. **Round в коде:** `activeEditorId`, shared draft, lock при правке, `fixVersion` сбрасывает раунд — [ADR-015](./decisions.md#adr-015-round--базовый-async-подрежим)
-3. LLM tools: effective content, `list_versions`, `get_version`
-4. Diff UI, review mode для owner hub
-5. Handoff и owner hub как явный выбор при создании документа
+2. **Документация модели** — [ADR-016](./decisions.md#adr-016-единая-таблица-drafts-и-сессия-редактирования)
+3. Выравнивание прототипа: `drafts[]`, session draft, `currentActorId` только handoff
+4. LLM tools: effective content, `list_versions`, `get_version`
+5. Diff UI; handoff UI («Сохранить и передать»)
+6. HTTP backend по [api-sketch.md](./api-sketch.md)
 
 ## Статус
 
-Прототип `front/` опережает целевую модель (actorDrafts, owner hub API). Выравнивание под **round** — [decisions.md § прототип](./decisions.md#расхождение-с-прототипом-front).
+Прототип `front/` — `document.draft`, `activeEditorId`, `actorDrafts` ([расхождение](./decisions.md#расхождение-с-прототипом-front)). Целевая схема — [domain-model.md](./domain-model.md).

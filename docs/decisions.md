@@ -228,6 +228,76 @@
 - UI: между раундами — «документ готов к правкам»; во время раунда — индикатор активного редактора.
 - LLM-интеграция: write при своём lock; read — effective content + опционально версии по tool.
 
+> **Уточнение:** целевая модель хранения и эксклюзива — [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования). `activeEditorId` на document в round — реализация прототипа; в целевой схеме эксклюзив на **session draft**, `currentActorId` только в handoff.
+
+---
+
+## ADR-016: Единая таблица drafts и сессия редактирования
+
+**Контекст:** В прототипе черновик встроен в `document.draft`, личные fork'и — в `actorDrafts[]`, эксклюзив round — в `activeEditorId` на document. Обсуждение показало: draft логичнее как **надстройка над version**; round и handoff делят **один** слот редактирования; owner hub — параллельные fork'и без общего lock; канон публикуется через **новую version** при каждом «Сохранить».
+
+**Решение:**
+
+### Сущности persistence (целевая)
+
+| Сущность | Роль |
+|----------|------|
+| `documents` | Метаданные, `head_version_id`, `async_workflow`; **`current_actor_id` только handoff** |
+| `versions` | Immutable снимки, линейная main-линия |
+| `drafts` | Mutable текст, всегда с `actor_id`; привязка `base_version_id` → versions |
+| `submissions` | Owner hub: замороженное предложение при submit (в API/DTO пока `Edit`) |
+| `comments` | Замечания к `target_version_id` |
+
+Diff не хранится ([ADR-007](#adr-007-diff-вычислять-не-хранить)).
+
+### Draft как надстройка над version
+
+- Каждая строка `drafts`: `document_id`, `base_version_id`, `actor_id`, `title`, `content`, `updated_at`.
+- `base_version_id` — от какого head начата работа; diff в UI: `version(base) ↔ draft`.
+- **Не архивировать** draft'ы на каждую версию в истории — только активные рабочие копии.
+
+### Round и handoff — один session draft
+
+- На документ **не больше одного активного session draft** (эксклюзивная сессия).
+- **Кто первый занял** — редактирует (`holder` / `actor_id` держателя сессии); остальные ждут.
+- **Round:** занять может любой участник, когда session draft свободен.
+- **Handoff:** занять может только `documents.current_actor_id`; после «Сохранить и передать …» — `fixVersion` + смена `current_actor_id`.
+- **`active_editor_id` на document не используется** в целевой модели (только `current_actor_id` в handoff).
+
+### Owner hub — без общего lock
+
+- **Нет** session draft на весь документ.
+- У **owner** — свой draft (`actor_id = owner_id`) — канон в работе.
+- У **участников** — свои draft'ы; параллельная работа.
+- Submit → **submission** (снимок на момент отправки, не живой draft).
+- Owner apply/reject → свой draft → `fixVersion`.
+
+### Сохранение = новая version
+
+- **«Сохранить»** (`fixVersion`) — единственная публикация в канон: снимок session draft (round/handoff) или draft owner'а (hub) → vN+1, `head_version_id` обновляется.
+- **Autosave** во время сессии пишет только в draft, **не** создаёт version.
+- После `fixVersion` в round/handoff: session draft освобождается / сбрасывается к новому head.
+
+### Политика B при смене head (owner hub)
+
+- Канонический draft owner'а после `fixVersion`: `base_version_id` и `content` синхронны с новым head.
+- **Личные** draft'ы участников с устаревшим `base_version_id`: содержимое **не затирается**, `needs_rebase = true`; rebase вручную от нового head.
+- Pending submissions к старому head → `superseded` (кроме `incorporated_edit_ids` в версии).
+
+### Handoff в UI
+
+- Рядом с «Сохранить» — «Сохранить и передать …» с выбором получателя → `fixVersion` + `current_actor_id := to` (+ опционально `version.handoff.to`).
+
+### Схлопывание версий (отложено)
+
+- Допускается будущая оптимизация: удаление промежуточных versions при сохранении ссылочной целостности (comments, submissions.base_version_id, head).
+
+**Последствия:**
+
+- Прототип `front/` (`document.draft`, `actorDrafts`, `activeEditorId`) — **временное** отображение целевой модели; выравнивание — отдельный срез.
+- API: `acquireEditLock` / `releaseEditLock` семантически = занять / освободить **session draft**; в hub — `updateActorDraft` / `updateDraft` по actor.
+- [ADR-011](#adr-011-head-draft-и-submit), [ADR-014](#adr-014-видимость-draft-и-публикация), [ADR-015](#adr-015-round--базовый-async-подрежим) остаются в силе по продуктовой семантике; меняется **расклад по таблицам** и поля lock/turn.
+
 ---
 
 ## ADR-014: Видимость draft и публикация
@@ -236,7 +306,7 @@
 
 **Решение:**
 
-- **Round:** один shared draft — виден всем участникам с правом чтения; эксклюзив только на **запись** (`activeEditorId`).
+- **Round / handoff:** один **session draft** — виден всем с правом чтения; эксклюзив на **запись** (держатель session draft; см. [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)).
 - **Owner hub:** участники не видят **живые** fork'и друг друга. Текст чужой работы — только после **submit** (в ленте `Edit` / review).
 - **Owner** (арбитр) в MVP видит **submitted** proposals; полная видимость всех server-side draft owner'у — опционально позже (гибрид с предупреждением при publish).
 - **Публикация head** (`fixVersion`): gate по **submitted** изменениям, не по незасабмиченным draft. Незасабмиченный draft участника **не блокирует** publish owner'а.
@@ -260,19 +330,20 @@
 | Чистый Open (DAG без owner) | Только по запросу |
 | 3-way auto-merge | Ручной merge арбитра; auto только для совместимых hunks ([ADR-013](#adr-013-handoff-для-пересылки-owner-hub-для-арбитража)) |
 | Смена asyncWorkflow после создания | Избегать; миграция сложна |
-| Round: `activeEditorId`, lock при правке | [ADR-015](#adr-015-round--базовый-async-подрежим); в прототипе — частично |
-| Личный draft per actor в storage | Owner hub / handoff ([ADR-011](#adr-011-head-draft-и-submit)); round — один shared draft |
+| Round: session draft, lock при правке | [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования); в прототипе — `activeEditorId` |
+| Личный draft per actor в storage | Owner hub ([ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)); round/handoff — один session draft |
+| Схлопывание промежуточных versions | [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования); после стабилизации backend |
 | Owner видит все draft до submit | Опционально; MVP — только submitted ([ADR-014](#adr-014-видимость-draft-и-публикация)) |
 | PHP backend / OpenAPI | После стабилизации local-адаптера по [api-sketch.md](./api-sketch.md) |
 
 ## Расхождение с прототипом `front/`
 
-**Целевая модель:** `asyncWorkflow: round` по умолчанию ([ADR-015](#adr-015-round--базовый-async-подрежим)).
+**Целевая модель:** `asyncWorkflow: round` по умолчанию ([ADR-015](#adr-015-round--базовый-async-подрежим)); хранение — [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования) (`drafts` + versions; session draft в round/handoff; `current_actor_id` только handoff).
 
-**Реализовано (round):** `codraft.state.v4`, shared draft, `activeEditorId` (захват/освобождение lock), `acquireEditLock` / `releaseEditLock`, `fixVersion` со сбросом lock, capabilities по workflow, миграция v3→v4.
+**Реализовано (round, прототип):** `codraft.state.v4`, встроенный `document.draft`, `activeEditorId` на document (временная схема), `acquireEditLock` / `releaseEditLock`, `fixVersion`, capabilities, миграция v3→v4.
 
-**Реализовано (owner hub):** демо-документ `owner_hub`, Edit/Comment, `actorDrafts`, autosave личного черновика, `submitActorEdit`, режим «Правки», rebase-баннер, ReviewPanel, apply/reject.
+**Реализовано (owner hub, прототип):** демо `owner_hub`, Edit/Comment, `actorDrafts[]` (целевой аналог — строки `drafts` per actor), submit/rebase/apply, ReviewPanel.
 
-**Не реализовано:** handoff (очередь, `currentActorId`, передача хода), LLM tools по версиям, diff UI, margin-комментарии, HTTP-адаптер, выбор workflow при создании в UI.
+**Не реализовано:** единая таблица `drafts` в persistence; handoff (`current_actor_id`, «Сохранить и передать»); LLM tools; diff UI; HTTP backend; выбор workflow в UI.
 
-**Расширения (опционально):** полный handoff; явный выбор `owner_hub` при создании документа.
+**Расширения (опционально):** схлопывание промежуточных versions; явный выбор `owner_hub` при создании.
