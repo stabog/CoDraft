@@ -22,6 +22,7 @@ const selectedRange = ref(null)
 const saveTimer = ref(null)
 const lastSavedContent = ref('')
 const lastSavedTitle = ref('')
+const ready = ref(false)
 
 const latestVersion = computed(() => documentsStore.versions[0] || null)
 const hasChangesSinceVersion = computed(() => {
@@ -32,6 +33,7 @@ const hasChangesSinceVersion = computed(() => {
 onMounted(async () => {
   await documentsStore.loadDocument(route.params.id)
   syncDraftFromStore()
+  ready.value = true
 })
 
 onBeforeUnmount(() => {
@@ -52,6 +54,8 @@ function syncDraftFromStore() {
 }
 
 function scheduleSave() {
+  if (!ready.value) return
+
   clearTimeout(saveTimer.value)
   if (draft.title === lastSavedTitle.value && draft.content === lastSavedContent.value) return
 
@@ -102,7 +106,7 @@ async function restoreVersion(versionId) {
 
 <template>
   <section class="editor-page">
-    <div v-if="documentsStore.loading" class="muted">Открываем документ...</div>
+    <div v-if="documentsStore.loading || !ready" class="muted">Открываем документ...</div>
     <div v-else-if="documentsStore.error" class="error">{{ documentsStore.error }}</div>
 
     <template v-else>
@@ -145,7 +149,7 @@ async function restoreVersion(versionId) {
           />
         </section>
 
-        <aside class="side-pane workspace-sidebar">
+        <aside class="workspace-sidebar">
           <div class="tabbar">
             <button type="button" :class="{ active: sideTab === 'comments' }" @click="sideTab = 'comments'">
               Комментарии
@@ -170,3 +174,156 @@ async function restoreVersion(versionId) {
     </template>
   </section>
 </template>
+
+<style scoped>
+:global(.main) {
+  max-width: none;
+  padding: 36px clamp(18px, 4vw, 80px);
+}
+
+.editor-page {
+  min-width: 0;
+}
+
+.editor-toolbar {
+  align-items: center;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(320px, 700px) minmax(360px, 1fr);
+  margin-bottom: 18px;
+}
+
+.title-input {
+  background: #ffffff;
+  border: 1px solid #d7dce5;
+  border-radius: 8px;
+  color: #0f172a;
+  font-size: 28px;
+  font-weight: 800;
+  min-height: 62px;
+  padding: 12px 16px;
+  width: 100%;
+}
+
+.version-actions {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.save-state {
+  color: #667085;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.dot {
+  color: #98a2b3;
+}
+
+.version-actions button {
+  background: #4f7df3;
+  border-radius: 8px;
+  box-shadow: 0 8px 18px rgba(79, 125, 243, 0.2);
+  color: #ffffff;
+  flex: 0 0 auto;
+  min-height: 52px;
+  padding: 0 20px;
+}
+
+.version-actions button:disabled {
+  box-shadow: none;
+}
+
+.editor-layout {
+  align-items: stretch;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 450px;
+}
+
+.workspace-column,
+.workspace-sidebar {
+  background: #ffffff;
+  border: 1px solid #e1e5eb;
+  border-radius: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.workspace-sidebar {
+  align-self: start;
+}
+
+.tabbar {
+  align-items: center;
+  background: #f8fafc;
+  border-bottom: 1px solid #e1e5eb;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 10px;
+}
+
+.tabbar button {
+  background: transparent;
+  border-radius: 7px;
+  color: #344054;
+  min-height: 42px;
+  padding: 0 14px;
+}
+
+.tabbar button.active {
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px #cfd6e2;
+  color: #0f172a;
+}
+
+@media (max-width: 1180px) {
+  :global(.main) {
+    padding: 24px 18px;
+  }
+
+  .editor-toolbar,
+  .editor-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .version-actions {
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 720px) {
+  .editor-toolbar {
+    gap: 12px;
+  }
+
+  .title-input {
+    font-size: 24px;
+    min-height: 50px;
+  }
+
+  .version-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .save-state {
+    justify-content: flex-start;
+  }
+
+  .version-actions button {
+    width: 100%;
+  }
+
+  .editor-layout {
+    gap: 14px;
+  }
+}
+</style>
