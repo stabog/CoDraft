@@ -23,7 +23,7 @@ CoDraft — рабочее пространство для Markdown-докуме
 ## План (актуальный)
 
 1. ~~Edit + Comment в прототипе~~ — [ADR-010](./decisions.md#adr-010-edit-и-comment-как-два-типа-замечаний)
-2. **Документация модели** — [ADR-016](./decisions.md#adr-016-единая-таблица-drafts-и-сессия-редактирования)
+2. ~~**Документация модели** — [ADR-016](./decisions.md#adr-016-единая-таблица-drafts-и-сессия-редактирования)~~
 3. Выравнивание прототипа: `drafts[]`, session draft, `currentActorId` только handoff
 4. LLM tools: effective content, `list_versions`, `get_version`
 5. Diff UI; handoff UI («Сохранить и передать»)

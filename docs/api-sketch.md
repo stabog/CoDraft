@@ -39,10 +39,11 @@
 
 ```ts
 {
-  canEditDraft: boolean      // активный редактор или между раундами
-  canFixVersion: boolean     // держит lock
+  canEditDraft: boolean      // round/handoff: session draft свободен или actor — держатель
+  canFixVersion: boolean     // держатель session draft
+  canTakeLock: boolean       // round: session draft свободен
   canComment: boolean
-  canSubmitEdit: false       // round
+  canSubmitEdit: false       // round / handoff
   canApplyEdit: false
 }
 ```
@@ -74,7 +75,10 @@
 
 `{ title, content, source: 'draft' | 'head', headVersionId, headVersionNumber }`
 
-Вычисляется: draft, если `draft.content !== head.content` (или title); иначе head.
+Вычисляется:
+
+- **round / handoff:** session draft занят и `draft ≠ head` → draft; иначе head.
+- **owner hub:** draft owner'а `≠ head` → draft owner'а; иначе head (личные draft'ы участников не входят в effective content).
 
 ### Version
 

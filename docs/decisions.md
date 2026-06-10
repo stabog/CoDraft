@@ -113,9 +113,9 @@
 - owner сливает proposals в draft вручную, diff `head ↔ proposal` и `parent → child`;
 - `asyncWorkflow` по умолчанию `owner_hub`; выбор при создании документа — позже.
 
-**Handoff** — следующий срез в коде после стабилизации общей модели ([ADR-013](#adr-013-handoff-для-пересылки-owner-hub-для-арбитража)).
+**Handoff** — следующий срез в коде после стабилизации общей модели ([ADR-013](#adr-013-handoff-и-owner-hub-как-расширения-round)).
 
-**Уточнение (2025):** продуктовый приоритет для сценария «пересылка документов» — **handoff**; owner hub в продукте — прежде всего **арбитраж при конфликтах** ([ADR-013](#adr-013-handoff-для-пересылки-owner-hub-для-арбитража)). ADR-009 описывает порядок **реализации в прототипе**, не финальную продуктовую иерархию.
+**Уточнение (2025):** продуктовый приоритет для сценария «пересылка документов» — **handoff**; owner hub в продукте — прежде всего **арбитраж при конфликтах** ([ADR-013](#adr-013-handoff-и-owner-hub-как-расширения-round)). ADR-009 описывает порядок **реализации в прототипе**, не финальную продуктовую иерархию.
 
 **Последствия:**
 
@@ -135,13 +135,13 @@
 - **Автосейв draft** сохраняет незавершённую работу раунда; **не меняет head**.
 - **`fixVersion`** — конец раунда: снимок draft → новая версия, head обновляется ([ADR-015](#adr-015-round--базовый-async-подрежим)).
 
-**По подрежимам:**
+**По подрежимам** (целевое хранение — [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)):
 
 | Подрежим | Draft |
 |----------|--------|
-| **round** (базовый) | Один **shared draft** на документ; эксклюзив через `activeEditorId` |
-| **handoff** (расширение) | Личный fork от head на актора с ходом; очередь через `currentActorId` |
-| **owner_hub** (расширение) | Owner правит свой draft; участники — личные fork'и + **submit** → `Edit` |
+| **round** (базовый) | Один **session draft**; эксклюзив у держателя сессии |
+| **handoff** (расширение) | **Тот же session draft**; занять может только `currentActorId` |
+| **owner_hub** (расширение) | Draft **per actor**; участники — **submit** → submission (`Edit` в API) |
 
 - **submit** (`submitEdit` / `submitActorEdit`) — в **owner hub**: diff fork → `Edit`, owner мержит в канон. В **round** и **handoff** слой Edit не обязателен — правки идут через draft → `fixVersion`.
 - **Effective content** (чтение, в т.ч. LLM): draft, если есть незафиксированные изменения; иначе head.
@@ -155,7 +155,7 @@
 
 **Последствия:**
 
-- Round — один `document.draft`; owner hub — `actorDrafts[]` per участник ([ADR-014](#adr-014-видимость-draft-и-публикация)).
+- Persistence: таблица `drafts` ([ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)); в прототипе — `document.draft` / `actorDrafts[]`.
 - ADR-003 сохраняется для head.
 
 ---
@@ -169,8 +169,8 @@
 - **Async MVP:** canonical content — **markdown**; structured JSON doc — для `collaborationMode: live` ([ADR-001](#adr-001-async-и-live--отдельные-режимы)), не для текущего MVP.
 - **Редактор** всегда правит **один working-текст** (личный draft / fork от head). Не composite «база + чужие вставки в потоке».
 - **Режим просмотра правок** — отдельно, **read-only**: head + overlay pending `Edit` (decorations / diff). Apply / reject — из панели или merge UI, не из preview-редактора.
-- **Round:** один shared draft; эксклюзив через `activeEditorId` ([ADR-015](#adr-015-round--базовый-async-подрежим)).
-- **Handoff / owner hub:** `base = head`, `working = fork`; submit строит diff (+ summary) в owner hub.
+- **Round / handoff:** один session draft ([ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)); в прототипе round — `activeEditorId`.
+- **Owner hub:** `base = head`, working = draft актора; submit строит diff (+ summary).
 - Owner hub: owner правит **свой** draft; чужие изменения — через submitted `Edit`.
 - **Edit** якорится к `baseVersionId` (head); смена **чужого** draft owner'ом не сдвигает якоря в storage. Ломается только **применимость к текущему draft** → поиск по `quotedText` + контекст, статус `draft_apply_ok | conflict | stale`.
 - Основной сценарий правки — **range** (`scope: range`); **document** — через diff целиком.
@@ -195,8 +195,8 @@
 | Три и более участника, или **несовместимые** submit'ы к одному head | **owner_hub** — расширение round; арбитраж |
 | Несколько submit'ов, все **совместимы** | Auto-merge hunks без полноценного hub UI |
 
-- **Handoff** добавляет к round: `currentActorId`, передачу хода при `fixVersion`, личный fork, reclaim, confirm.
-- **Owner hub** добавляет к round: личные fork'и, слой `Edit`, owner-only фиксация канона после merge.
+- **Handoff** добавляет к round: `currentActorId`, «Сохранить и передать …», reclaim, confirm ([ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования) — тот же session draft, не fork per actor).
+- **Owner hub** добавляет к round: draft per actor, слой submission (`Edit`), owner-only `fixVersion`.
 
 **Последствия:**
 
@@ -213,9 +213,9 @@
 
 - **`asyncWorkflow: round`** — подрежим по умолчанию при создании документа.
 - **Раунд** — период от начала правок до `fixVersion`. Между раундами документ **открыт**: следующий раунд может начать **любой** участник, в том числе тот же.
-- **Один shared draft** на документ (не fork per actor).
-- **`activeEditorId: UserRef | null`** — эксклюзив на запись. `null` между раундами. Пользователь начинает править — lock переходит к нему; LLM не пишет параллельно. Приоритет у человека при конфликте.
-- **`fixVersion`** завершает раунд: снимок draft → vN+1, `activeEditorId = null`, draft синхронизируется с новым head.
+- **Один session draft** на документ (не fork per actor); между сессиями слот свободен.
+- **Эксклюзив:** держатель session draft (в прототипе — `activeEditorId` на document; целевое — `draft.actorId` держателя, см. [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)).
+- **`fixVersion`** завершает сессию: снимок session draft → vN+1, слот освобождается, draft = новый head.
 - **Чтение (UI, LLM):** *effective content* = draft, если `draft ≠ head`; иначе head. История — `listVersions` / `getVersion` (отдельные tools, не в каждом вызове).
 - Слой **Edit** в round **не используется** — правки напрямую через draft → `fixVersion`.
 - **Комментарии** к версиям — как в [ADR-004](#adr-004-комментарии-привязаны-к-версии).
@@ -224,11 +224,10 @@
 
 **Последствия:**
 
-- API: `updateDraft` только при `activeEditorId === actor` или `activeEditorId === null` (захват lock при первой правке).
-- UI: между раундами — «документ готов к правкам»; во время раунда — индикатор активного редактора.
-- LLM-интеграция: write при своём lock; read — effective content + опционально версии по tool.
-
-> **Уточнение:** целевая модель хранения и эксклюзива — [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования). `activeEditorId` на document в round — реализация прототипа; в целевой схеме эксклюзив на **session draft**, `currentActorId` только в handoff.
+- API: `acquireEditLock` / `updateDraft` / `releaseEditLock` — занять / autosave / освободить session draft ([ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)).
+- UI: между сессиями — «документ готов к правкам»; во время сессии — кто держит session draft.
+- LLM-интеграция: write при занятом session draft; read — effective content + опционально версии по tool.
+- **`currentActorId` на document** — только handoff, не round.
 
 ---
 
@@ -328,7 +327,7 @@ Diff не хранится ([ADR-007](#adr-007-diff-вычислять-не-хр
 | Live-режим (realtime) | Не проектируем детально; JSON doc — там ([ADR-012](#adr-012-редактор-и-просмотр-правок-async-mvp-на-md)) |
 | Inline track changes в редакторе | Отдельно от diff + review mode ([ADR-012](#adr-012-редактор-и-просмотр-правок-async-mvp-на-md)) |
 | Чистый Open (DAG без owner) | Только по запросу |
-| 3-way auto-merge | Ручной merge арбитра; auto только для совместимых hunks ([ADR-013](#adr-013-handoff-для-пересылки-owner-hub-для-арбитража)) |
+| 3-way auto-merge | Ручной merge арбитра; auto только для совместимых hunks ([ADR-013](#adr-013-handoff-и-owner-hub-как-расширения-round)) |
 | Смена asyncWorkflow после создания | Избегать; миграция сложна |
 | Round: session draft, lock при правке | [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования); в прототипе — `activeEditorId` |
 | Личный draft per actor в storage | Owner hub ([ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)); round/handoff — один session draft |
