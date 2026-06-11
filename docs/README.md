@@ -15,7 +15,7 @@ CoDraft — рабочее пространство для Markdown-докуме
 ## Текущий фокус
 
 - **Модель:** три таблицы; черновики = `versions.kind: draft`; publish = **promote** ([хранение](./decisions.md#хранение))
-- **round / handoff:** session draft → publish в канон
+- **round:** session draft, publish, closeSession (очередь `turnActorId`)
 - **ownerHub:** personal drafts, `submitted`, owner merge в свой draft → publish
 - **Базовый режим:** [round](./async-workflows.md#round)
 
@@ -23,7 +23,7 @@ CoDraft — рабочее пространство для Markdown-докуме
 
 1. ~~Модель данных в доках~~
 2. ~~Выравнивание прототипа под `versions.kind`~~ (v5)
-3. Handoff UI, diff UI, rename DTO
+3. closeSession UI (закрыть / передать ход), diff UI, rename DTO
 4. LLM tools
 5. HTTP backend
 

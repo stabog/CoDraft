@@ -1,81 +1,82 @@
 # Async-подрежимы
 
-Три подрежима при `collaborationMode: async`. По умолчанию — **round**.
+`collaborationMode: async`. По умолчанию — **round**.
 
-Модель данных: [хранение](./decisions.md#хранение) — черновики как `versions` с `kind: draft`; публикация — **promote**.
+Модель: [domain-model.md](./domain-model.md). Решения: [round и пересылка](./decisions.md#round-и-пересылка).
 
-## Общая модель
+## Общие понятия
 
 | Понятие | Смысл |
 |---------|--------|
-| **canonical** | `version` с `kind: published` |
-| **draft** | `version` с `kind: draft`, mutable |
-| **publish** | promote draft → published (одна строка) |
-| **submit** | `submitted: true` на personal draft (ownerHub, без copy) |
+| **canonical** | `version`, `kind: published` |
+| **session draft** | `kind: draft`, `draftRole: session` (только round) |
+| **personal draft** | `kind: draft`, `draftRole: personal` (только ownerHub) |
+| **publish** | promote → новая published version |
+| **closeSession** | выйти из сессии + назначить очередь |
 
 ---
 
 ## Round
 
+### Жизненный цикл
+
 1. Создание → published **v1**.
-2. Участник занимает **session** draft → autosave.
-3. **«Сохранить»** → promote session draft → vN+1.
-4. Новый session draft для следующей сессии (или слот свободен до «Редактировать»).
+2. **`acquireSession`** — занять слот (с учётом `turnActorId`).
+3. Autosave в session draft (переживает перезагрузку вкладки, слот держится).
+4. **`publish`** («Сохранить») — promote, держатель **остаётся**, новый session draft.
+5. Повторять 3–4 сколько нужно (обед, промежуточные версии).
+6. **`closeSession`** — завершить владение слотом:
+   - **Сохранить и закрыть** — `passTo: null` (дальше любой);
+   - **Сохранить и передать ход** — `passTo: конкретный актор`.
 
-Комментарии — к **published**. Submissions нет.
+### Пересылка документа
 
-| UI | API |
-|----|-----|
+Тот же round. Отличие — **`turnActorId`** после `closeSession`:
+
+```
+Анна closeSession({ passTo: Борис }) → только Борис может acquireSession
+Борис publish… → closeSession({ passTo: null }) → дальше любой
+```
+
+### API (целевое)
+
+| UI | Метод |
+|----|--------|
 | Редактировать | `acquireSession` |
 | Сохранить | `publish` |
-| Отменить | `releaseSession` |
-
----
-
-## Handoff
-
-Тот же **один session draft**, плюс `document.turnActorId`.
-
-1. Занять session draft может только актор с ходом.
-2. **«Сохранить»** → promote.
-3. **«Сохранить и передать …»** → promote + `turnActorId := получатель`.
+| Сохранить и закрыть | `closeSession({ passTo: null })` |
+| Сохранить и передать ход | `closeSession({ passTo })` |
 
 ---
 
 ## Owner hub
 
-Работа **на уровне черновиков** до publish owner'а.
-
-1. Canonical vN. У каждого — **personal** draft (`parentVersionId = canonical`).
-2. Участники правят свой draft; **submit** — флаг `submitted` (owner видит текст).
-3. Пока owner **не опубликовал**, участники **могут менять** свои draft'ы (в т.ч. submitted).
-4. Owner собирает итог **в своём** personal draft (правки участников + comments к published).
-5. Owner **«Сохранить»** → promote **своего** draft → vN+1.
-6. Остальные: `needsRebase`.
+1. Personal draft на актора от canonical.
+2. Участники: правки + **`submit`** (`submitted: true`).
+3. Owner: merge в свой draft + **publish**.
+4. Остальные: **`needsRebase`**.
 
 | | Участник | Owner |
 |--|----------|-------|
-| Видит | свой draft | свой + чужие `submitted=true` |
 | Publish | нет | да |
 | Submit | да | нет |
-
-**Нет** apply/reject/copy. Отклонение — не включать в свой draft / comment.
+| Видит submitted чужих | нет | да |
 
 ---
 
 ## Сравнение
 
-| | Round | Handoff | Owner hub |
-|---|-------|---------|-----------|
-| Draft | session ×1 | session ×1 | personal ×N |
-| Publish | держатель session | актор с ходом | только owner |
-| Submit | — | — | флаг на draft |
-| `turnActorId` | null | задан | null |
+| | Round | Owner hub |
+|---|-------|-----------|
+| Draft | session ×1 | personal ×N |
+| Фиксация в канон | `publish` (держатель) | `publish` (owner) |
+| Очередь | `turnActorId` | — |
+| Закрытие сессии | `closeSession` | — |
 
 ---
 
 ## Примеры
 
-- **LLM + пользователь** — round, session draft, publish.
-- **Договор, вы + юрист как ревьюер** — ownerHub: юрист submit'ит personal draft, вы merge в свой.
-- **Два соавтора по очереди** — handoff, один session draft.
+- **LLM + пользователь** — round, `turnActorId: null`.
+- **Два соавтора по очереди** — round, цепочка `closeSession({ passTo })`.
+- **Автор + ревьюеры** — ownerHub.

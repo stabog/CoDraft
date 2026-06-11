@@ -160,6 +160,12 @@ export function markDraftsStale(state, documentId, oldCanonicalId) {
   }
 }
 
+export function draftDiffersFromHead(state, document, draft) {
+  const head = getCanonicalVersion(state, document)
+  if (!head || !draft) return false
+  return draft.title !== head.title || draft.content !== head.content
+}
+
 export function promoteDraft(draft, { versionNumber, summary }) {
   draft.kind = KIND_PUBLISHED
   draft.versionNumber = versionNumber
@@ -238,6 +244,9 @@ export function migrateV4ToV5(v4) {
       headVersionId: oldDoc.headVersionId,
       versionNumber,
       activeEditorId: oldDoc.activeEditorId ?? null,
+      turnActorId: oldDoc.turnActorId ?? null,
+      turnSetBy: oldDoc.turnSetBy ?? null,
+      turnSetAt: oldDoc.turnSetAt ?? null,
       currentActorId: oldDoc.currentActorId,
       title: oldDoc.draft?.title ?? headVersion?.title ?? 'Untitled document',
       updatedAt: oldDoc.draft?.updatedAt ?? oldDoc.createdAt,

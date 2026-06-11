@@ -1,166 +1,123 @@
 # API sketch
 
-Контракт `documentsApi`. См. [domain-model.md](./domain-model.md), [decisions.md](./decisions.md#хранение).
+Контракт `documentsApi`. Модель: [domain-model.md](./domain-model.md).
 
-**Actor:** `{ id, name }`. LLM — `llm:…`.
-
-### Прототип vs целевое
-
-| Целевое | Прототип `front/` |
-|---------|-------------------|
-| `canonicalVersionId` | `headVersionId` |
-| `versionNumber` | `headVersionNumber` / `number` |
-| `workflow` / `ownerHub` | `asyncWorkflow` / `owner_hub` |
-| `turnActorId` | — |
-| `Version.kind` draft/published | `document.draft`, `actorDrafts`, отдельные published |
-| `submitted` на draft | `submitEdit` → `edits[]` |
-| `publish` | `fixVersion` |
-| `sessionHolderId` | `activeEditorId` |
+**Actor:** `{ id, name }`.
 
 ---
 
 ## Принципы
 
-1. Три сущности persistence: **documents**, **versions**, **comments**.
-2. Черновик = `version` с `kind: draft`; канон = `kind: published`.
-3. **Publish** = promote draft-строки (без copy).
-4. `capabilities` с сервера.
-5. Diff на клиенте.
+1. Persistence: `documents`, `versions`, `comments`.
+2. Черновик = `version` с `kind: draft`.
+3. **Publish** = promote (без copy).
+4. Права через `capabilities`.
 
 ---
 
-## DTO
-
-### UserRef
-
-`{ id, name }`
-
-### Version
+## Document
 
 ```ts
 {
-  id, documentId,
-  kind: 'published' | 'draft',
-  authorId: UserRef,
-  title, content,
+  id, title, createdBy, ownerId,
+  collaborationMode: 'async' | 'live',
+  workflow: 'round' | 'ownerHub',
+  canonicalVersionId, versionNumber,
+  sessionHolderId?: UserRef | null,   // round
+  turnActorId?: UserRef | null,       // round: null = любой
+  turnSetBy?: UserRef | null,
+  turnSetAt?: string | null,
+  capabilities,
   createdAt, updatedAt,
-  // published only:
-  versionNumber?: number,
+}
+```
+
+---
+
+## Version
+
+```ts
+{
+  id, documentId, kind: 'published' | 'draft',
+  authorId: UserRef, title, content,
+  createdAt, updatedAt,
+  versionNumber?: number,      // published
   summary?: string,
-  // draft only:
-  parentVersionId?: string,
+  parentVersionId?: string,  // draft
   draftRole?: 'session' | 'personal',
   submitted?: boolean,
   needsRebase?: boolean,
 }
 ```
 
-### DocumentSummary
+---
 
-`{ id, title, excerpt, ownerId, ownerName, versionNumber, workflow, updatedAt, createdAt }`
+## Round — методы
 
-### DocumentDetail
+| Метод | Описание |
+|-------|----------|
+| `acquireSession` | Занять слот; проверка `turnActorId` |
+| `updateSessionDraft` | Autosave session draft |
+| `publish` | Promote если draft ≠ canonical; **держатель остаётся**; новый session draft |
+| `closeSession` | `{ passTo: UserRef \| null }` — publish при правках; release; `turnActorId := passTo`; `turnSetBy`, `turnSetAt` |
 
-```ts
-{
-  id, title, createdBy, ownerId,
-  collaborationMode, workflow,
-  canonicalVersionId, versionNumber,
-  activeDraft?,              // projection: session или owner personal
-  sessionHolderId?,           // round/handoff
-  turnActorId?,               // handoff
-  capabilities,
-  createdAt, updatedAt,
-}
-```
+### Соответствие UI
 
-### EffectiveContent
+| UI | Вызов |
+|----|--------|
+| Сохранить | `publish()` |
+| Сохранить и закрыть | `closeSession({ passTo: null })` |
+| Сохранить и передать ход | `closeSession({ passTo: user })` |
 
-`{ title, content, source: 'draft' | 'canonical', canonicalVersionId, versionNumber }`
+---
 
-### Comment
+## Owner hub — методы
 
-Без изменений: `targetVersionId` → **published** only.
+| Метод | Описание |
+|-------|----------|
+| `getOrCreatePersonalDraft` | lazy create |
+| `updateVersion` | autosave personal draft |
+| `submitDraft` | `submitted := true` |
+| `rebaseDraft` | от canonical; `submitted := false` |
+| `publish` | promote personal draft owner'а |
 
-### EditorBundle
+---
+
+## EditorBundle
 
 ```ts
 {
   document: DocumentDetail,
-  publishedVersions: Version[],   // kind=published, versionNumber desc
-  draftVersions: Version[],       // kind=draft (фильтр по правам)
+  publishedVersions: Version[],
+  sessionDraft?: Version,           // round, если есть
+  personalDraft?: Version,          // hub, свой
+  submittedDrafts?: Version[],      // hub, owner inbox
   comments: Comment[],
 }
 ```
 
-Прототип: `versions` + `edits` — legacy.
+---
 
-### Capabilities
+## EffectiveContent
 
-**round / handoff:** `canEditDraft`, `canPublish`, `canTakeSession`, `canComment`; `canSubmitDraft: false`.
-
-**ownerHub:** + `canSubmitDraft` (участник); owner: `canPublish`, `canViewSubmittedDrafts`.
+```ts
+{ title, content, source: 'draft' | 'canonical', canonicalVersionId, versionNumber }
+```
 
 ---
 
-## Методы
+## Прототип
 
-### Документы
+**Storage:** `codraft.state.v5`.
 
-| Метод | Описание |
-|-------|----------|
-| `listDocuments` | Из `documents` (title, versionNumber) |
-| `createDocument` | Document + published v1 |
-| `getDocument` / `getEditorBundle` | |
+| Целевое | Сейчас в `front/` |
+|---------|-------------------|
+| `canonicalVersionId` | `headVersionId` |
+| `workflow` | `asyncWorkflow` |
+| `sessionHolderId` | `activeEditorId` |
+| `turnActorId` | не реализовано |
+| `closeSession` | не реализовано |
+| `publish` (holder остаётся) | `fixVersion` снимает lock |
+| `acquireSession` | `acquireEditLock` |
 
-### Session draft (round / handoff)
-
-| Метод | Описание |
-|-------|----------|
-| `acquireSession` | Создать/занять `kind=draft`, `draftRole=session` от canonical |
-| `updateVersion` | Autosave draft; sync `document.title` |
-| `releaseSession` | Удалить/сбросить session draft |
-
-Прототип: `acquireEditLock`, `updateDraft`, `releaseEditLock`.
-
-### Personal draft (ownerHub)
-
-| Метод | Описание |
-|-------|----------|
-| `getOrCreatePersonalDraft` | `kind=draft`, `draftRole=personal`, `parentVersionId=canonical` |
-| `updateVersion` | Autosave своего draft |
-| `submitDraft` | `submitted := true` (без copy) |
-| `unsubmitDraft` | `submitted := false` (опционально) |
-| `rebaseDraft` | `parentVersionId := canonical`, content от canonical |
-
-Прототип: `updateActorDraft`, `submitActorEdit`.
-
-### Публикация
-
-| Метод | Описание |
-|-------|----------|
-| `publish` | **Promote** draft → `published`, новый `versionNumber`, update document |
-
-Параметры: `{ summary? }`. Handoff: `{ turnActorId?: string }` («Сохранить и передать»).
-
-Прототип: `fixVersion`. **Нет** `applyEdit` / `rejectEdit`.
-
-### История
-
-| Метод | Описание |
-|-------|----------|
-| `listPublishedVersions` | `kind=published` |
-| `getVersion` | |
-| `restoreToSession` | round/handoff: session draft с текстом выбранной published |
-
-### Комментарии
-
-`listComments`, `addComment`, … — к `targetVersionId` (published).
-
----
-
-## Storage
-
-**Целевое:** `documents`, `versions`, `comments`.
-
-**Прототип:** `codraft.state.v5` — см. [прототип](./decisions.md#прототип-front).
+Bundle прототипа: `versions`, `actorDraft`, `submittedDrafts`, projection `document.draft` — см. [decisions#прототип](./decisions.md#прототип-front).
