@@ -1,4 +1,8 @@
 import { DEV_USERS } from '../config/devUsers'
+import {
+  createDraftVersion,
+  createPublishedVersion,
+} from '../api/versionModel'
 
 export const DEMO_DOCUMENT_ID = '22222222-2222-4222-8222-222222222201'
 export const DEMO_VERSION_ID = '22222222-2222-4222-8222-222222222211'
@@ -153,61 +157,72 @@ function anchorFor(content, quotedText) {
   return { from, to: from + quotedText.length, quotedText }
 }
 
-function buildDemoEdits(documentId, baseVersionId, content) {
-  const documentEditContent = content.replace(
+function buildDemoPersonalDrafts(documentId, baseVersionId, content) {
+  const ownerDraftId = '44444444-4444-4444-8444-444444444401'
+  const borisDraftId = '44444444-4444-4444-8444-444444444402'
+  const mariaDraftId = '44444444-4444-4444-8444-444444444403'
+
+  const borisContent = content.replace(
     '**Решение:** Sibling-версии от одного parent заменяются **edits**',
     '**Решение:** Параллельные sibling-версии заменяются слоем **Edit** (правки)',
   )
 
   const rangeQuote = 'Open (DAG) в MVP не выделяем'
-  const rangeAnchor = anchorFor(content, rangeQuote)
+  const mariaContent = content.replace(
+    rangeQuote,
+    'Open (DAG) отложен до запроса на равноправные ветки',
+  )
 
-  const edits = [
-    {
-      id: '33333333-3333-4333-8333-333333333301',
+  const drafts = [
+    createDraftVersion({
+      id: ownerDraftId,
       documentId,
-      baseVersionId,
-      author: userRef(boris),
-      scope: 'document',
-      summary: 'Уточнил формулировку ADR-006 про Edit вместо proposals',
-      status: 'pending',
+      author: userRef(anna),
       title: DEMO_TITLE,
-      content: documentEditContent,
+      content,
+      parentVersionId: baseVersionId,
+      draftRole: 'personal',
+      createdAt: '2026-06-07T16:00:00.000Z',
+    }),
+    createDraftVersion({
+      id: borisDraftId,
+      documentId,
+      author: userRef(boris),
+      title: DEMO_TITLE,
+      content: borisContent,
+      parentVersionId: baseVersionId,
+      draftRole: 'personal',
+      submitted: true,
       createdAt: '2026-06-08T10:15:00.000Z',
-    },
+    }),
+    createDraftVersion({
+      id: mariaDraftId,
+      documentId,
+      author: userRef(maria),
+      title: DEMO_TITLE,
+      content: mariaContent,
+      parentVersionId: baseVersionId,
+      draftRole: 'personal',
+      submitted: true,
+      createdAt: '2026-06-08T11:40:00.000Z',
+    }),
   ]
 
-  if (rangeAnchor) {
-    edits.push({
-      id: '33333333-3333-4333-8333-333333333302',
-      documentId,
-      baseVersionId,
-      author: userRef(maria),
-      scope: 'range',
-      summary: 'Предлагаю явно написать, что Open отложен, а не «не выделяем»',
-      status: 'pending',
-      anchor: rangeAnchor,
-      suggestedText: 'Open (DAG) отложен до запроса на равноправные ветки',
-      createdAt: '2026-06-08T11:40:00.000Z',
-    })
-  }
-
-  return edits
+  return drafts
 }
 
 function buildDemoComments(documentId, baseVersionId, content) {
   const comments = []
 
-  const quoteBoris = 'Word-подобный и Google Docs-подобный workflow'
-  const anchorBoris = anchorFor(content, quoteBoris)
+  const anchorBoris = anchorFor(content, 'Open (DAG) в MVP не выделяем')
   if (anchorBoris) {
     comments.push({
-      id: '44444444-4444-4444-8444-444444444401',
+      id: '55555555-5555-4555-8555-555555555501',
       documentId,
       targetVersionId: baseVersionId,
       author: userRef(boris),
       anchor: anchorBoris,
-      body: 'Стоит добавить в intro короткую таблицу «когда async, когда live», чтобы читатель не уходил в ADR-001 без контекста.',
+      body: 'Формулировка «не выделяем» звучит как окончательный отказ — лучше «отложено».',
       status: 'open',
       resolution: null,
       replies: [],
@@ -216,36 +231,10 @@ function buildDemoComments(documentId, baseVersionId, content) {
     })
   }
 
-  const quoteMaria = 'только owner редактирует draft'
-  const anchorMaria = anchorFor(content, quoteMaria)
-  if (anchorMaria) {
-    comments.push({
-      id: '44444444-4444-4444-8444-444444444402',
-      documentId,
-      targetVersionId: baseVersionId,
-      author: userRef(maria),
-      anchor: anchorMaria,
-      body: 'Нужен ли здесь пример сценария «бриф + три ревьюера», или это уже в async-workflows?',
-      status: 'open',
-      resolution: null,
-      replies: [
-        {
-          id: '44444444-4444-4444-8444-444444444403',
-          author: userRef(boris),
-          body: 'Думаю, одного абзаца-примера хватит, без дублирования всего workflows.',
-          createdAt: '2026-06-08T12:05:00.000Z',
-        },
-      ],
-      createdAt: '2026-06-08T10:55:00.000Z',
-      resolvedAt: null,
-    })
-  }
-
-  const quoteAnna = 'Diff на лету при просмотре'
-  const anchorAnna = anchorFor(content, quoteAnna)
+  const anchorAnna = anchorFor(content, 'diff на лету при просмотре')
   if (anchorAnna) {
     comments.push({
-      id: '44444444-4444-4444-8444-444444444404',
+      id: '55555555-5555-4555-8555-555555555502',
       documentId,
       targetVersionId: baseVersionId,
       author: userRef(anna),
@@ -275,32 +264,26 @@ export function createDemoDocumentState() {
     asyncWorkflow: 'owner_hub',
     activeEditorId: null,
     headVersionId: DEMO_VERSION_ID,
-    draft: {
-      title: DEMO_TITLE,
-      content,
-      updatedAt: createdAt,
-      updatedBy: author,
-    },
+    versionNumber: 1,
+    title: DEMO_TITLE,
+    updatedAt: createdAt,
     createdAt,
   }
 
-  const version = {
+  const version = createPublishedVersion({
     id: DEMO_VERSION_ID,
     documentId: DEMO_DOCUMENT_ID,
-    parentVersionId: null,
-    number: 1,
     author,
     title: DEMO_TITLE,
     content,
+    versionNumber: 1,
     summary: 'Создание документа',
-    incorporatedEditIds: [],
     createdAt,
-  }
+  })
 
   return {
     document,
-    version,
-    edits: buildDemoEdits(DEMO_DOCUMENT_ID, DEMO_VERSION_ID, content),
+    versions: [version, ...buildDemoPersonalDrafts(DEMO_DOCUMENT_ID, DEMO_VERSION_ID, content)],
     comments: buildDemoComments(DEMO_DOCUMENT_ID, DEMO_VERSION_ID, content),
   }
 }
@@ -312,8 +295,7 @@ export function mergeDemoIntoState(state) {
 
   const demo = createDemoDocumentState()
   state.documents.unshift(demo.document)
-  state.versions.push(demo.version)
-  state.edits.push(...demo.edits)
+  state.versions.push(...demo.versions)
   state.comments.push(...demo.comments)
   return { state, changed: true }
 }

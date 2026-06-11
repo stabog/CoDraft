@@ -1,6 +1,6 @@
 # API sketch
 
-Контракт `documentsApi`. См. [domain-model.md](./domain-model.md), [ADR-017](./decisions.md#adr-017-черновики-как-versions-три-таблицы).
+Контракт `documentsApi`. См. [domain-model.md](./domain-model.md), [decisions.md](./decisions.md#хранение).
 
 **Actor:** `{ id, name }`. LLM — `llm:…`.
 
@@ -163,4 +163,4 @@
 
 **Целевое:** `documents`, `versions`, `comments`.
 
-**Прототип:** `codraft.state.v4` — см. [расхождение](./decisions.md#расхождение-с-прототипом-front).
+**Прототип:** `codraft.state.v5` — см. [прототип](./decisions.md#прототип-front).

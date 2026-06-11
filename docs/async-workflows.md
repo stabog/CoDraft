@@ -2,7 +2,7 @@
 
 Три подрежима при `collaborationMode: async`. По умолчанию — **round**.
 
-Модель данных: [ADR-017](./decisions.md#adr-017-черновики-как-versions-три-таблицы) — черновики как `versions` с `kind: draft`; публикация — **promote**.
+Модель данных: [хранение](./decisions.md#хранение) — черновики как `versions` с `kind: draft`; публикация — **promote**.
 
 ## Общая модель
 

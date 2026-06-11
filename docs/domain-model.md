@@ -1,26 +1,14 @@
 # Доменная модель (async)
 
-Целевая persistence: **три таблицы** — `documents`, `versions`, `comments`.  
-Черновики — строки `versions` с `kind: draft`. Публикация — **promote** (без copy).  
-[ADR-017](./decisions.md#adr-017-черновики-как-versions-три-таблицы). Контракт: [api-sketch.md](./api-sketch.md).
+Persistence: **`documents`**, **`versions`**, **`comments`**.
 
-## Словарь имён
+- **Canonical** — `version` с `kind: published` (tip линии — `document.canonicalVersionId`).
+- **Draft** — `version` с `kind: draft` (mutable до **promote**).
+- Публикация в канон — **promote** draft-строки (без copy).
 
-| Прототип | Целевое |
-|----------|---------|
-| `headVersionId` | `canonicalVersionId` |
-| `asyncWorkflow` | `workflow` |
-| `owner_hub` | `ownerHub` |
-| `currentActorId` | `turnActorId` |
-| `number` | `versionNumber` |
-| `Edit` | **нет** — `submitted` на draft-version |
-| `submissions` | **нет** — `submitted` на draft-version |
-| `actorDrafts` | personal/session **versions** |
-| `drafts[]` | personal/session **versions** |
+Решения: [decisions.md](./decisions.md). API: [api-sketch.md](./api-sketch.md). Потоки: [async-workflows.md](./async-workflows.md).
 
-**Canonical** — опубликованная version (`kind: published`). **Draft** — mutable version (`kind: draft`).
-
-## Иерархия (от общего к частному)
+## Иерархия
 
 ```
 Document
@@ -35,14 +23,14 @@ Document
 | Поле | Описание |
 |------|----------|
 | `id` | |
-| `title` | Имя «файла»; денорм. для списка/дерева |
+| `title` | Имя документа; денорм. для списка и дерева |
 | `createdBy` | `UserRef` — кто создал (не меняется) |
 | `ownerId` | Ответственный; в **ownerHub** — кто публикует канон |
 | `collaborationMode` | `async` \| `live` |
 | `workflow` | `round` \| `handoff` \| `ownerHub` |
 | `canonicalVersionId` | Tip опубликованной линии |
-| `versionNumber` | Денорм. номер canonical (для «v3» в списке) |
-| `turnActorId` | **Только handoff** — чей ход |
+| `versionNumber` | Денорм. номер canonical (отображение «v3») |
+| `turnActorId` | Только **handoff** — чей ход |
 | `updatedAt` | Денорм. последняя активность |
 | `createdAt` | |
 
@@ -54,13 +42,13 @@ Document
 | Autosave draft | `document.title` := title из активного draft |
 | `publish` | `document.title` := title из promote'd version |
 
-Список документов — **без join** к `versions` для имени.
+Список документов отдаёт `document.title` без join к `versions`.
 
 ---
 
 ## Version
 
-Одна таблица. Поля зависят от `kind`:
+Одна таблица. Набор полей зависит от `kind`.
 
 ### Общие поля
 
@@ -69,71 +57,67 @@ Document
 | `id` | |
 | `documentId` | |
 | `kind` | `published` \| `draft` |
-| `authorId` | `UserRef` — автор строки (единое имя везде) |
+| `authorId` | `UserRef` — владелец строки |
 | `title` | Markdown |
 | `content` | Markdown |
 | `createdAt` | |
 | `updatedAt` | У `draft` — autosave; у `published` = `createdAt` |
 
-### Только `kind: published`
+### `kind: published`
 
 | Поле | Описание |
 |------|----------|
 | `versionNumber` | 1, 2, 3… линейный канон |
-| `summary` | Опционально («Версия N», позже LLM) |
+| `summary` | Опционально |
 
-**Immutable** после создания. `parentVersionId` **не храним** — предыдущая = `versionNumber − 1` в рамках документа.
+Immutable после promote. `parentVersionId` не хранится; предыдущая published в том же документе — `versionNumber − 1`.
 
-### Только `kind: draft`
+### `kind: draft`
 
 | Поле | Описание |
 |------|----------|
-| `parentVersionId` | **Canonical**, от которого fork (обязателен) |
+| `parentVersionId` | Canonical, от которого fork (обязателен) |
 | `draftRole` | `session` \| `personal` |
-| `submitted` | `personal` + ownerHub: участник отметил «готово к просмотру» |
-| `needsRebase` | fork устарел после смены canonical |
+| `submitted` | Только `personal` в **ownerHub**: участник отметил готовность к просмотру |
+| `needsRebase` | Fork устарел после смены canonical |
 
-**Mutable** (autosave). Handoff **не** в version — только `document.turnActorId`.
+Mutable (autosave). Очередь handoff — только `document.turnActorId`, не поля version.
 
-### Promote (публикация в канон)
+### Promote (`publish`)
 
-Единственный способ создать новую published version:
+Единственный способ опубликовать новую canonical version:
 
-1. Берётся draft (session или personal owner'а).
-2. **Та же строка:** `kind := published`, присваивается `versionNumber`, снимок фиксируется (больше не меняется).
-3. Обновляются поля document:
+1. Берётся draft: session (round/handoff) или personal owner'а (ownerHub).
+2. Та же строка: `kind := published`, присваивается `versionNumber`, содержимое фиксируется.
+3. Обновляется document:
 
    | Поле | Значение |
    |------|----------|
-   | `canonicalVersionId` | id promote'd version |
-   | `versionNumber` | номер новой published |
-   | `title` | title из promote'd version |
-4. round/handoff: для следующей сессии создаётся **новый** session draft от нового canonical.
-5. ownerHub: personal draft'ы с `parentVersionId` на старый canonical → `needsRebase`.
-
-**Copy не используем** в основном потоке.
+   | `canonicalVersionId` | id этой version |
+   | `versionNumber` | новый номер |
+   | `title` | title из version |
+4. **round/handoff:** создаётся новый session draft от нового canonical (или слот свободен до следующей сессии).
+5. **ownerHub:** personal draft'ы с `parentVersionId` на прежний canonical → `needsRebase = true`.
 
 ---
 
 ## Draft по подрежимам
 
-| Подрежим | Черновик | `draftRole` | Публикация |
-|----------|----------|-------------|------------|
-| **round** | один на документ | `session` | держатель **promote** session draft |
-| **handoff** | один на документ | `session` | `turnActorId` **promote** session draft |
-| **handoff** | — | — | опционально `turnActorId := to` при «Сохранить и передать» |
-| **ownerHub** | один на актора | `personal` | **только owner** **promote** свой draft |
+| Подрежим | Черновик | `draftRole` | Кто публикует |
+|----------|----------|-------------|---------------|
+| **round** | один на документ | `session` | держатель session draft |
+| **handoff** | один на документ | `session` | актор с `turnActorId` |
+| **handoff** | — | — | при передаче: `turnActorId := получатель` |
+| **ownerHub** | один на актора | `personal` | только owner (свой draft) |
 
-### ownerHub — рабочий цикл
+### ownerHub — цикл
 
-1. Canonical vN. У каждого — personal draft (`parentVersionId = canonical`).
-2. Участники правят свой draft; **submit** = `submitted: true` (та же строка, без copy).
-3. Owner видит **все personal draft с `submitted=true`** (живые, могут меняться до publish owner'а).
-4. Owner вручную собирает итог в **своём** personal draft (правки + **Comment** к published).
+1. Canonical vN. У каждого актора — personal draft (`parentVersionId = canonical`).
+2. Участник правит свой draft; **submit** = `submitted: true` на той же строке.
+3. Owner видит personal draft'ы других с `submitted=true` (текст может меняться до publish owner'а).
+4. Owner собирает итог в своём personal draft (изменения участников + учёт **Comment** к published).
 5. Owner **publish** → promote своего draft → vN+1.
-6. Остальные: `needsRebase` или новый fork от vN+1.
-
-**Нет** отдельных submissions, **нет** `apply`/`reject` — отклонение = owner не переносит; можно **Comment**.
+6. У остальных: `needsRebase` или новый fork от vN+1.
 
 ### Видимость (ownerHub)
 
@@ -171,16 +155,18 @@ Document
 
 ## Effective content
 
+Что считается «текущим текстом документа» для чтения (UI, LLM):
+
 | Подрежим | Условие | Источник |
 |----------|---------|----------|
-| round | session draft занят и ≠ canonical | session draft |
+| round | session draft есть и ≠ canonical | session draft |
 | round | иначе | canonical |
-| handoff | session draft занят и ≠ canonical | session draft |
+| handoff | session draft есть и ≠ canonical | session draft |
 | handoff | иначе | canonical |
 | ownerHub | personal draft owner'а ≠ canonical | personal draft owner'а |
 | ownerHub | иначе | canonical |
 
-Чужие personal draft'ы в effective content **не входят**.
+Чужие personal draft'ы в effective content не входят.
 
 ---
 
@@ -209,19 +195,19 @@ Document
 | Свой personal draft | да | да (свой) |
 | Publish canonical | да | нет |
 | Submit (`submitted`) | нет | да |
-| Видеть submitted чужих | да (`submitted=true`) | нет |
+| Видеть submitted чужих | да | нет |
 | Comment | да | да |
 
 ---
 
 ## Diff
 
-На клиенте:
+Вычисляется на клиенте, не хранится:
 
-| Сравнение | Когда |
-|-----------|--------|
+| Сравнение | Назначение |
+|-----------|------------|
 | `published[N−1]` ↔ `published[N]` | история канона |
-| `canonical` ↔ `draft` | рабочие изменения |
+| canonical ↔ активный draft | рабочие изменения |
 | draft owner'а ↔ submitted personal draft | ревью в ownerHub |
 
 ---
@@ -229,27 +215,12 @@ Document
 ## Инварианты
 
 1. Три таблицы: `documents`, `versions`, `comments`.
-2. v1 при создании: `kind=published`, `versionNumber=1`.
+2. При создании документа: `kind=published`, `versionNumber=1`.
 3. `published` immutable; `draft` mutable до promote.
-4. У `draft` всегда `parentVersionId` → текущий или прошлый canonical.
-5. У `published` только `versionNumber`; без `parentVersionId`.
-6. round/handoff: не более одного активного session draft.
-7. handoff: session draft только у `turnActorId`.
+4. У каждого `draft` есть `parentVersionId` на canonical (текущий или устаревший).
+5. У `published` есть `versionNumber`; `parentVersionId` отсутствует.
+6. round/handoff: не более одного session draft на документ.
+7. handoff: занять session draft может только `turnActorId`.
 8. ownerHub: publish canonical — только owner.
-9. После publish owner'а: draft'ы на старом canonical → `needsRebase` (политика B).
-10. Comment только к `published`.
-
----
-
-## Прототип `front/`
-
-| Legacy (прототип) | Целевое |
-|-------------------|---------|
-| `document.draft` | session draft (`versions`, `kind=draft`) |
-| `actorDrafts` | personal draft (`versions`, `kind=draft`) |
-| `edits` | `submitted` на personal draft |
-| `activeEditorId` | `sessionHolderId` |
-
-Целевое выравнивание — [расхождение](./decisions.md#расхождение-с-прототипом-front).
-
-[api-sketch.md](./api-sketch.md)
+9. После publish owner'а: draft'ы на старом canonical помечаются `needsRebase`.
+10. Comment привязан только к `published`.

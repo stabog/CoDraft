@@ -6,10 +6,12 @@ const props = defineProps({
   headTitle: { type: String, default: '' },
   headContent: { type: String, default: '' },
   headVersionNumber: { type: Number, default: 0 },
-  edits: { type: Array, default: () => [] },
+  submittedDrafts: { type: Array, default: () => [] },
 })
 
-const pendingEdits = computed(() => props.edits.filter((edit) => edit.status === 'pending'))
+const sortedDrafts = computed(() =>
+  [...props.submittedDrafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+)
 </script>
 
 <template>
@@ -17,25 +19,26 @@ const pendingEdits = computed(() => props.edits.filter((edit) => edit.status ===
     <header class="preview-header">
       <h2>Просмотр правок</h2>
       <p class="muted">
-        Версия v{{ headVersionNumber }} (принятая). Режим только для чтения — применение в панели «Замечания».
+        Версия v{{ headVersionNumber }} (канон). Отправленные черновики участников — только для чтения.
       </p>
     </header>
 
-    <div v-if="pendingEdits.length" class="edit-list">
-      <article v-for="edit in pendingEdits" :key="edit.id" class="edit-card">
+    <div v-if="sortedDrafts.length" class="edit-list">
+      <article v-for="draft in sortedDrafts" :key="draft.id" class="edit-card">
         <div class="edit-meta">
-          <strong>{{ edit.author.name }}</strong>
-          <span>{{ edit.scope === 'range' ? 'Фрагмент' : 'Документ' }}</span>
+          <strong>{{ draft.author.name }}</strong>
+          <span>{{ new Date(draft.updatedAt).toLocaleString() }}</span>
         </div>
-        <p class="summary">{{ edit.summary }}</p>
-        <blockquote v-if="edit.scope === 'range'">{{ edit.anchor.quotedText }}</blockquote>
-        <p v-if="edit.scope === 'range'" class="suggested">→ {{ edit.suggestedText }}</p>
+        <p class="summary">{{ draft.title }}</p>
+        <div class="draft-body">
+          <VisualEditor :model-value="draft.content" readonly />
+        </div>
       </article>
     </div>
-    <p v-else class="muted empty-edits">Нет отправленных правок к этой версии.</p>
+    <p v-else class="muted empty-edits">Нет отправленных черновиков к этой версии.</p>
 
     <div class="head-preview">
-      <h3 class="head-label">Текст v{{ headVersionNumber }}</h3>
+      <h3 class="head-label">Канон v{{ headVersionNumber }}</h3>
       <VisualEditor :model-value="headContent" readonly />
     </div>
   </section>
@@ -93,22 +96,14 @@ const pendingEdits = computed(() => props.edits.filter((edit) => edit.status ===
 
 .summary {
   font-size: 13px;
-  margin: 0 0 6px;
+  margin: 0 0 8px;
 }
 
-blockquote {
-  background: var(--background-secondary);
-  border-left: 2px solid var(--color-green);
-  color: var(--text-muted);
-  font-size: 13px;
-  margin: 0 0 6px;
-  padding: 8px 10px;
-}
-
-.suggested {
-  color: var(--text-normal);
-  font-size: 13px;
-  margin: 0;
+.draft-body {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  max-height: 240px;
+  overflow: auto;
 }
 
 .empty-edits {

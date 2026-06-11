@@ -43,6 +43,10 @@ export function useEditorDocumentStatus({
 
     if (canEditActorDraft.value) {
       if (actorDraftMeta.value?.needsRebase) return `v${v} · личный черновик устарел`
+      if (actorDraftMeta.value?.submitted && hasUnsubmittedChanges.value) {
+        return `v${v} · отправлено · есть новые правки`
+      }
+      if (actorDraftMeta.value?.submitted) return `v${v} · отправлено на рассмотрение`
       if (hasUnsubmittedChanges.value) return `v${v} · личный черновик · не отправлен`
       return `v${v} · личный черновик`
     }

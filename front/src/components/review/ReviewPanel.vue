@@ -3,12 +3,11 @@ import { computed, ref } from 'vue'
 
 const props = defineProps({
   comments: { type: Array, default: () => [] },
-  edits: { type: Array, default: () => [] },
+  submittedDrafts: { type: Array, default: () => [] },
   selectedRange: { type: Object, default: null },
   headVersionId: { type: String, default: '' },
   canComment: { type: Boolean, default: true },
-  canSubmitEdit: { type: Boolean, default: false },
-  canApplyEdit: { type: Boolean, default: false },
+  isOwner: { type: Boolean, default: false },
 })
 
 const emit = defineEmits([
@@ -16,9 +15,6 @@ const emit = defineEmits([
   'add-reply',
   'resolve-comment',
   'reopen-comment',
-  'submit-edit',
-  'apply-edit',
-  'reject-edit',
 ])
 
 const commentBody = ref('')
@@ -28,12 +24,18 @@ const headComments = computed(() =>
   props.comments.filter((item) => item.targetVersionId === props.headVersionId),
 )
 
-const pendingEdits = computed(() => props.edits.filter((edit) => edit.status === 'pending'))
-
 const feed = computed(() => {
   const items = [
-    ...pendingEdits.value.map((edit) => ({ kind: 'edit', createdAt: edit.createdAt, data: edit })),
-    ...headComments.value.map((comment) => ({ kind: 'comment', createdAt: comment.createdAt, data: comment })),
+    ...props.submittedDrafts.map((draft) => ({
+      kind: 'submitted-draft',
+      createdAt: draft.updatedAt,
+      data: draft,
+    })),
+    ...headComments.value.map((comment) => ({
+      kind: 'comment',
+      createdAt: comment.createdAt,
+      data: comment,
+    })),
   ]
   return items.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 })
@@ -49,10 +51,6 @@ function submitReply(commentId) {
   if (!body) return
   emit('add-reply', commentId, body)
   replies.value[commentId] = ''
-}
-
-function editScopeLabel(edit) {
-  return edit.scope === 'range' ? 'Правка фрагмента' : 'Правка документа'
 }
 
 function resolutionLabel(comment) {
@@ -71,8 +69,8 @@ function resolutionLabel(comment) {
 
     <div v-else-if="canComment" class="hint">Выделите текст, чтобы оставить комментарий.</div>
 
-    <div v-if="canSubmitEdit" class="hint">
-      Правки отправляются из редактора кнопкой «Отправить правки».
+    <div v-if="isOwner && submittedDrafts.length" class="hint owner-hint">
+      Отправленные черновики — перенесите нужное в свой редактор вручную.
     </div>
 
     <div v-if="feed.length" class="feed">
@@ -82,21 +80,14 @@ function resolutionLabel(comment) {
         class="feed-item"
         :class="[item.kind, item.data.status]"
       >
-        <template v-if="item.kind === 'edit'">
+        <template v-if="item.kind === 'submitted-draft'">
           <div class="meta">
-            <span class="badge">Правка</span>
+            <span class="badge">Черновик</span>
             <strong>{{ item.data.author.name }}</strong>
-            <span>{{ editScopeLabel(item.data) }} · {{ item.data.status }}</span>
+            <span>отправлен · {{ new Date(item.data.updatedAt).toLocaleString() }}</span>
           </div>
-          <p class="summary">{{ item.data.summary }}</p>
-          <blockquote v-if="item.data.scope === 'range'">
-            {{ item.data.anchor.quotedText }}
-          </blockquote>
-          <p v-if="item.data.scope === 'range'" class="suggested">→ {{ item.data.suggestedText }}</p>
-          <div v-if="canApplyEdit && item.data.status === 'pending'" class="row-actions">
-            <button type="button" @click="emit('apply-edit', item.data.id)">Применить</button>
-            <button type="button" class="ghost" @click="emit('reject-edit', item.data.id)">Отклонить</button>
-          </div>
+          <p v-if="item.data.needsRebase" class="stale">Устарел относительно канона</p>
+          <p class="summary">{{ item.data.title }}</p>
         </template>
 
         <template v-else>
@@ -120,14 +111,14 @@ function resolutionLabel(comment) {
             <button type="submit" aria-label="Ответить">↵</button>
           </form>
 
-          <div v-if="item.data.status === 'open' && canApplyEdit" class="row-actions">
+          <div v-if="item.data.status === 'open' && isOwner" class="row-actions">
             <button type="button" @click="emit('resolve-comment', item.data.id, 'acknowledged')">Учтено</button>
             <button type="button" class="ghost" @click="emit('resolve-comment', item.data.id, 'rejected')">
               Отклонить
             </button>
           </div>
           <button
-            v-else-if="item.data.status === 'resolved' && canApplyEdit"
+            v-else-if="item.data.status === 'resolved' && isOwner"
             type="button"
             class="ghost"
             @click="emit('reopen-comment', item.data.id)"
@@ -160,15 +151,14 @@ function resolutionLabel(comment) {
   padding: 12px;
 }
 
-.inline-form,
-.edit-actions {
+.owner-hint {
   border-bottom: 1px solid var(--background-modifier-border);
-  padding: 12px;
+  font-size: 12px;
 }
 
-.edit-actions {
-  display: grid;
-  gap: 8px;
+.inline-form {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 12px;
 }
 
 .quote,
@@ -182,7 +172,7 @@ blockquote {
   padding: 8px 10px;
 }
 
-.feed-item.edit blockquote {
+.feed-item.submitted-draft blockquote {
   border-left-color: var(--color-green);
 }
 
@@ -205,11 +195,6 @@ button {
   min-height: 30px;
 }
 
-button.secondary {
-  margin-top: 0;
-  width: 100%;
-}
-
 button.ghost {
   background: transparent;
   color: var(--text-muted);
@@ -221,10 +206,7 @@ button.ghost {
   padding: 12px;
 }
 
-.feed-item.resolved,
-.feed-item.applied,
-.feed-item.rejected,
-.feed-item.superseded {
+.feed-item.resolved {
   opacity: 0.55;
 }
 
@@ -258,11 +240,15 @@ button.ghost {
 
 .summary,
 .body,
-.suggested {
+.stale {
   color: var(--text-normal);
   font-size: 13px;
   line-height: 1.5;
   margin: 6px 0;
+}
+
+.stale {
+  color: var(--color-orange);
 }
 
 .row-actions {

@@ -6,7 +6,7 @@ export const useDocumentsStore = defineStore('documents', {
     documents: [],
     currentDocument: null,
     versions: [],
-    edits: [],
+    submittedDrafts: [],
     comments: [],
     headSnapshot: null,
     actorDraft: null,
@@ -58,7 +58,7 @@ export const useDocumentsStore = defineStore('documents', {
         const bundle = await documentsApi.getEditorBundle(documentId, actor)
         this.currentDocument = bundle.document
         this.versions = bundle.versions
-        this.edits = bundle.edits
+        this.submittedDrafts = bundle.submittedDrafts ?? []
         this.comments = bundle.comments
         this.headSnapshot = bundle.head ?? null
         this.actorDraft = bundle.actorDraft ?? null
@@ -100,46 +100,31 @@ export const useDocumentsStore = defineStore('documents', {
       this.actorDraft = await documentsApi.rebaseActorDraft(documentId, actor)
     },
 
-    async submitActorEdit(documentId, actor, payload) {
-      const edit = await documentsApi.submitActorEdit(documentId, actor, payload)
-      this.edits = [edit, ...this.edits.filter((item) => item.id !== edit.id)]
-      return edit
+    async submitDraft(documentId, actor) {
+      this.actorDraft = await documentsApi.submitDraft(documentId, actor)
+      const bundle = await documentsApi.getEditorBundle(documentId, actor)
+      this.submittedDrafts = bundle.submittedDrafts ?? []
+      this.currentDocument = bundle.document
+      return this.actorDraft
+    },
+
+    async submitActorEdit(documentId, actor) {
+      return this.submitDraft(documentId, actor)
     },
 
     async fixVersion(documentId, actor, payload) {
       const result = await documentsApi.fixVersion(documentId, actor, payload)
       this.currentDocument = result.document
       this.versions = await documentsApi.listVersions(documentId, actor)
-      this.edits = await documentsApi.listEdits(documentId, actor, {
-        baseVersionId: result.document.headVersionId,
-        status: 'pending',
-      })
       const bundle = await documentsApi.getEditorBundle(documentId, actor)
       this.headSnapshot = bundle.head
       this.actorDraft = bundle.actorDraft
+      this.submittedDrafts = bundle.submittedDrafts ?? []
       return result.version
     },
 
     async restoreVersionToDraft(documentId, versionId, actor) {
       this.currentDocument = await documentsApi.restoreVersionToDraft(documentId, versionId, actor)
-    },
-
-    async submitEdit(documentId, actor, payload) {
-      const edit = await documentsApi.submitEdit(documentId, actor, payload)
-      this.edits = [edit, ...this.edits.filter((item) => item.id !== edit.id)]
-      return edit
-    },
-
-    async applyEdit(documentId, editId, actor) {
-      const result = await documentsApi.applyEdit(documentId, editId, actor)
-      this.currentDocument = result.document
-      this.edits = this.edits.map((item) => (item.id === editId ? result.edit : item))
-      return result
-    },
-
-    async rejectEdit(documentId, editId, actor) {
-      const edit = await documentsApi.rejectEdit(documentId, editId, actor)
-      this.edits = this.edits.map((item) => (item.id === editId ? edit : item))
     },
 
     async addComment(documentId, actor, payload) {

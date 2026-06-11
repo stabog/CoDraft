@@ -30,8 +30,6 @@ const saveTimer = ref(null)
 const lastSavedContent = ref('')
 const lastSavedTitle = ref('')
 const ready = ref(false)
-const submitSummary = ref('')
-const showSubmitForm = ref(false)
 
 const capabilities = computed(() => documentsStore.capabilities)
 const headVersion = computed(() => documentsStore.headVersion)
@@ -114,8 +112,6 @@ function resetWorkspaceUi() {
   sourceOpen.value = false
   workspaceMode.value = 'edit'
   selectedRange.value = null
-  showSubmitForm.value = false
-  submitSummary.value = ''
 }
 
 async function openDocument(documentId) {
@@ -263,9 +259,7 @@ async function rebaseActorDraft() {
   lastSavedContent.value = draft.content
 }
 
-async function submitActorEdit() {
-  if (!submitSummary.value.trim()) return
-
+async function submitActorDraft() {
   clearTimeout(saveTimer.value)
   await documentsStore.updateActorDraft(route.params.id, userStore.actor, {
     title: draft.title,
@@ -273,16 +267,12 @@ async function submitActorEdit() {
   })
 
   try {
-    await documentsStore.submitActorEdit(route.params.id, userStore.actor, {
-      summary: submitSummary.value.trim(),
-    })
-    submitSummary.value = ''
-    showSubmitForm.value = false
+    await documentsStore.submitDraft(route.params.id, userStore.actor)
     syncDraftFromStore()
     lastSavedTitle.value = draft.title
     lastSavedContent.value = draft.content
   } catch (error) {
-    window.alert(error.message || 'Не удалось отправить правки')
+    window.alert(error.message || 'Не удалось отправить черновик')
   }
 }
 
@@ -313,11 +303,6 @@ async function addComment(body) {
     body,
   })
   selectedRange.value = null
-}
-
-async function applyEdit(editId) {
-  await documentsStore.applyEdit(route.params.id, editId, userStore.actor)
-  syncDraftFromStore()
 }
 
 async function restoreVersion(versionId) {
@@ -389,7 +374,7 @@ async function restoreVersion(versionId) {
                 type="button"
                 class="secondary compact submit-btn"
                 :disabled="!hasUnsubmittedChanges || actorDraftMeta?.needsRebase"
-                @click="showSubmitForm = !showSubmitForm"
+                @click="submitActorDraft"
               >
                 Отправить
               </button>
@@ -439,20 +424,6 @@ async function restoreVersion(versionId) {
             </div>
           </header>
 
-          <form
-            v-if="showSubmitForm && canEditActorDraft"
-            class="submit-form"
-            @submit.prevent="submitActorEdit"
-          >
-            <textarea v-model="submitSummary" placeholder="Кратко: что изменили и зачем" />
-            <div class="submit-form-actions">
-              <button type="submit" :disabled="!submitSummary.trim() || !hasUnsubmittedChanges">
-                Подтвердить отправку
-              </button>
-              <button type="button" class="ghost" @click="showSubmitForm = false">Отмена</button>
-            </div>
-          </form>
-
           <div class="editor-canvas" :class="{ 'is-readonly': !isWritable && workspaceMode === 'edit' }">
             <div v-if="showReadonlyStrip" class="readonly-strip">
               <span>{{ readonlyHint }}</span>
@@ -463,7 +434,7 @@ async function restoreVersion(versionId) {
               :head-title="headSnapshot?.title ?? ''"
               :head-content="headSnapshot?.content ?? ''"
               :head-version-number="headVersion?.number ?? 0"
-              :edits="documentsStore.edits"
+              :submitted-drafts="documentsStore.submittedDrafts"
             />
             <VisualEditor
               v-else
@@ -489,18 +460,15 @@ async function restoreVersion(versionId) {
           <ReviewPanel
             v-if="sideTab === 'review'"
             :comments="documentsStore.comments"
-            :edits="documentsStore.edits"
+            :submitted-drafts="documentsStore.submittedDrafts"
             :selected-range="selectedRange"
             :head-version-id="headVersion?.id"
             :can-comment="capabilities?.canComment"
-            :can-submit-edit="false"
-            :can-apply-edit="capabilities?.canApplyEdit"
+            :is-owner="capabilities?.isOwner"
             @add-comment="addComment"
             @add-reply="(id, body) => documentsStore.addReply(id, userStore.actor, { body })"
             @resolve-comment="(id, resolution) => documentsStore.resolveComment(id, userStore.actor, resolution)"
             @reopen-comment="(id) => documentsStore.reopenComment(id, userStore.actor)"
-            @apply-edit="applyEdit"
-            @reject-edit="(id) => documentsStore.rejectEdit(route.params.id, id, userStore.actor)"
           />
           <VersionPanel
             v-else

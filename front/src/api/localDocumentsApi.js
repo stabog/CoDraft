@@ -1,7 +1,30 @@
 import { apiError } from './apiError'
 import { DEMO_DOCUMENT_ID, mergeDemoIntoState } from '../mocks/demoDecisionsDocument'
+import {
+  ROLE_PERSONAL,
+  ROLE_SESSION,
+  createDraftVersion,
+  createPublishedVersion,
+  emptyState,
+  getCanonicalVersion,
+  getPersonalDraft,
+  getSessionDraft,
+  listPersonalDrafts,
+  listPublishedVersions,
+  listSubmittedDrafts,
+  markDraftsStale,
+  migrateV4ToV5,
+  promoteDraft,
+  syncDocumentFromDraft,
+  syncDocumentFromVersion,
+  toDraftProjection,
+  toPersonalDraftDto,
+  toPublishedDto,
+  toSubmittedDraftDto,
+} from './versionModel'
 
-const STORAGE_KEY = 'codraft.state.v4'
+const STORAGE_KEY = 'codraft.state.v5'
+const LEGACY_V4_KEY = 'codraft.state.v4'
 const LEGACY_V3_KEY = 'codraft.state.v3'
 const LEGACY_V2_KEY = 'codraft.state.v2'
 const LEGACY_KEY = 'codraft.documents.v1'
@@ -15,17 +38,35 @@ function userRef(actor) {
   return { id: actor.id, name: actor.name }
 }
 
-function emptyState() {
-  return { documents: [], versions: [], edits: [], comments: [], actorDrafts: [] }
+function isRoundWorkflow(document) {
+  return document.asyncWorkflow === 'round'
 }
 
-function normalizeState(state) {
-  let changed = false
+function isOwnerHubWorkflow(document) {
+  return document.asyncWorkflow === 'owner_hub'
+}
 
-  if (!state.actorDrafts) {
-    state.actorDrafts = []
-    changed = true
-  }
+function isHandoffWorkflow(document) {
+  return document.asyncWorkflow === 'handoff'
+}
+
+function getActiveEditorUserId(document) {
+  const editor = document.activeEditorId
+  if (!editor) return null
+  return typeof editor === 'string' ? editor : editor.id
+}
+
+function documentNeedsOwnerHub(state, document) {
+  const canonical = getCanonicalVersion(state, document)
+  if (!canonical) return false
+
+  return listPersonalDrafts(state, document.id, { parentVersionId: canonical.id }).some(
+    (draft) => draft.submitted,
+  )
+}
+
+function normalizeDocuments(state) {
+  let changed = false
 
   for (const document of state.documents || []) {
     if (document.id === DEMO_DOCUMENT_ID) {
@@ -52,50 +93,7 @@ function normalizeState(state) {
     }
   }
 
-  return { state, changed }
-}
-
-function documentNeedsOwnerHub(state, document) {
-  const hasPendingEdits = state.edits.some(
-    (edit) => edit.documentId === document.id && edit.status === 'pending',
-  )
-  const hasActorDrafts = state.actorDrafts.some((draft) => draft.documentId === document.id)
-  return hasPendingEdits || hasActorDrafts
-}
-
-function isRoundWorkflow(document) {
-  return document.asyncWorkflow === 'round'
-}
-
-function isOwnerHubWorkflow(document) {
-  return document.asyncWorkflow === 'owner_hub'
-}
-
-function isHandoffWorkflow(document) {
-  return document.asyncWorkflow === 'handoff'
-}
-
-function getActiveEditorUserId(document) {
-  const editor = document.activeEditorId
-  if (!editor) return null
-  return typeof editor === 'string' ? editor : editor.id
-}
-
-function syncDraftToHead(document, head, actor) {
-  document.draft.title = head.title
-  document.draft.content = head.content
-  document.draft.updatedAt = now()
-  document.draft.updatedBy = userRef(actor)
-}
-
-function ensureRoundEditLock(document, actor) {
-  const lockUserId = getActiveEditorUserId(document)
-  if (lockUserId && lockUserId !== actor.id) {
-    throw apiError('CONFLICT', 'Document is being edited by another participant')
-  }
-  if (!lockUserId) {
-    document.activeEditorId = userRef(actor)
-  }
+  return changed
 }
 
 function migrateLegacy(raw) {
@@ -117,60 +115,56 @@ function migrateLegacy(raw) {
       collaborationMode: 'async',
       asyncWorkflow: DEFAULT_WORKFLOW,
       headVersionId: versionId,
+      versionNumber: 1,
       activeEditorId: null,
-      draft: {
-        title,
-        content,
-        updatedAt: old.updatedAt || createdAt,
-        updatedBy: author,
-      },
+      title,
+      updatedAt: old.updatedAt || createdAt,
       createdAt,
     })
 
     const oldVersions = (raw.versions || []).filter((item) => item.documentId === documentId)
-  const sorted = oldVersions.length
+    const sorted = oldVersions.length
       ? [...oldVersions].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
       : []
 
     if (sorted.length) {
-      let parentId = null
       sorted.forEach((item, index) => {
         const id = item.id || makeId()
-        state.versions.push({
-          id,
-          documentId,
-          parentVersionId: parentId,
-          number: index + 1,
-          author: { id: item.authorName || actor.id, name: item.authorName || actor.name },
-          title: item.title || title,
-          content: item.content || content,
-          summary: item.summary || `Версия ${index + 1}`,
-          incorporatedEditIds: [],
-          createdAt: item.createdAt || createdAt,
-        })
-        parentId = id
+        state.versions.push(
+          createPublishedVersion({
+            id,
+            documentId,
+            author: { id: item.authorName || actor.id, name: item.authorName || actor.name },
+            title: item.title || title,
+            content: item.content || content,
+            versionNumber: index + 1,
+            summary: item.summary || `Версия ${index + 1}`,
+            createdAt: item.createdAt || createdAt,
+          }),
+        )
       })
-      const head = state.versions.filter((v) => v.documentId === documentId).at(-1)
-      const doc = state.documents.find((d) => d.id === documentId)
+      const head = listPublishedVersions(state, documentId)[0]
+      const doc = state.documents.find((item) => item.id === documentId)
       doc.headVersionId = head.id
+      doc.versionNumber = head.versionNumber
     } else {
-      state.versions.push({
-        id: versionId,
-        documentId,
-        parentVersionId: null,
-        number: 1,
-        author,
-        title,
-        content,
-        summary: 'Создание документа',
-        incorporatedEditIds: [],
-        createdAt,
-      })
+      state.versions.push(
+        createPublishedVersion({
+          id: versionId,
+          documentId,
+          author,
+          title,
+          content,
+          versionNumber: 1,
+          summary: 'Создание документа',
+          createdAt,
+        }),
+      )
     }
   }
 
   for (const old of raw.comments || []) {
-    const doc = state.documents.find((d) => d.id === old.documentId)
+    const doc = state.documents.find((item) => item.id === old.documentId)
     if (!doc) continue
     state.comments.push({
       id: old.id || makeId(),
@@ -201,52 +195,57 @@ function migrateLegacy(raw) {
 
 function readState() {
   let state
-
   let normalizedChanged = false
 
-  const raw = localStorage.getItem(STORAGE_KEY)
-  if (raw) {
+  const rawV5 = localStorage.getItem(STORAGE_KEY)
+  if (rawV5) {
     try {
-      const parsed = normalizeState(JSON.parse(raw))
-      state = parsed.state
-      normalizedChanged = parsed.changed
+      state = JSON.parse(rawV5)
+      if (normalizeDocuments(state)) normalizedChanged = true
     } catch {
       state = emptyState()
     }
   } else {
-    const legacyV3 = localStorage.getItem(LEGACY_V3_KEY)
-    if (legacyV3) {
+    const rawV4 = localStorage.getItem(LEGACY_V4_KEY)
+    if (rawV4) {
       try {
-        const parsed = normalizeState(JSON.parse(legacyV3))
-        state = parsed.state
+        state = migrateV4ToV5(JSON.parse(rawV4))
         normalizedChanged = true
       } catch {
         state = emptyState()
       }
     } else {
-    const legacyV2 = localStorage.getItem(LEGACY_V2_KEY)
-    if (legacyV2) {
-      try {
-        const parsed = normalizeState(JSON.parse(legacyV2))
-        state = parsed.state
-        normalizedChanged = true
-      } catch {
-        state = emptyState()
-      }
-    } else {
-      const legacy = localStorage.getItem(LEGACY_KEY)
-      if (legacy) {
+      const legacyV3 = localStorage.getItem(LEGACY_V3_KEY)
+      if (legacyV3) {
         try {
-          const parsed = normalizeState(migrateLegacy(JSON.parse(legacy)))
-          state = parsed.state
+          state = migrateV4ToV5(JSON.parse(legacyV3))
           normalizedChanged = true
         } catch {
           state = emptyState()
         }
       } else {
-        state = emptyState()
+        const legacyV2 = localStorage.getItem(LEGACY_V2_KEY)
+        if (legacyV2) {
+          try {
+            state = migrateV4ToV5(JSON.parse(legacyV2))
+            normalizedChanged = true
+          } catch {
+            state = emptyState()
+          }
+        } else {
+          const legacy = localStorage.getItem(LEGACY_KEY)
+          if (legacy) {
+            try {
+              state = migrateLegacy(JSON.parse(legacy))
+              normalizedChanged = true
+            } catch {
+              state = emptyState()
+            }
+          } else {
+            state = emptyState()
+          }
+        }
       }
-    }
     }
   }
 
@@ -269,15 +268,11 @@ function getDocumentRecord(state, documentId) {
 }
 
 function getVersionRecord(state, documentId, versionId) {
-  const version = state.versions.find((item) => item.id === versionId && item.documentId === documentId)
+  const version = state.versions.find(
+    (item) => item.id === versionId && item.documentId === documentId,
+  )
   if (!version) throw apiError('NOT_FOUND', 'Version not found')
   return version
-}
-
-function getEditRecord(state, documentId, editId) {
-  const edit = state.edits.find((item) => item.id === editId && item.documentId === documentId)
-  if (!edit) throw apiError('NOT_FOUND', 'Edit not found')
-  return edit
 }
 
 function getCommentRecord(state, commentId) {
@@ -287,7 +282,112 @@ function getCommentRecord(state, commentId) {
 }
 
 function getHeadVersion(state, document) {
-  return getVersionRecord(state, document.id, document.headVersionId)
+  return getCanonicalVersion(state, document)
+}
+
+function ensureRoundEditLock(document, actor) {
+  const lockUserId = getActiveEditorUserId(document)
+  if (lockUserId && lockUserId !== actor.id) {
+    throw apiError('CONFLICT', 'Document is being edited by another participant')
+  }
+  if (!lockUserId) {
+    document.activeEditorId = userRef(actor)
+  }
+}
+
+function getOrCreateSessionDraft(state, document, actor) {
+  const head = getHeadVersion(state, document)
+  let sessionDraft = getSessionDraft(state, document.id)
+
+  if (!sessionDraft) {
+    sessionDraft = createDraftVersion({
+      id: makeId(),
+      documentId: document.id,
+      author: userRef(actor),
+      title: head.title,
+      content: head.content,
+      parentVersionId: head.id,
+      draftRole: ROLE_SESSION,
+      createdAt: now(),
+    })
+    state.versions.push(sessionDraft)
+  }
+
+  if (sessionDraft.parentVersionId !== head.id && !sessionDraft.needsRebase) {
+    sessionDraft.needsRebase = true
+  }
+
+  return sessionDraft
+}
+
+function getOrCreatePersonalDraft(state, document, actor) {
+  const head = getHeadVersion(state, document)
+  let personalDraft = getPersonalDraft(state, document.id, actor.id)
+
+  if (!personalDraft) {
+    personalDraft = createDraftVersion({
+      id: makeId(),
+      documentId: document.id,
+      author: userRef(actor),
+      title: head.title,
+      content: head.content,
+      parentVersionId: head.id,
+      draftRole: ROLE_PERSONAL,
+      createdAt: now(),
+    })
+    state.versions.push(personalDraft)
+    return personalDraft
+  }
+
+  if (personalDraft.parentVersionId !== head.id && !personalDraft.needsRebase) {
+    personalDraft.needsRebase = true
+  }
+
+  return personalDraft
+}
+
+function getOwnerPersonalDraft(state, document) {
+  return getPersonalDraft(state, document.id, document.ownerId)
+}
+
+function getOrCreateOwnerPersonalDraft(state, document) {
+  const owner = document.createdBy?.id === document.ownerId
+    ? document.createdBy
+    : { id: document.ownerId, name: document.createdBy?.name ?? 'Owner' }
+  return getOrCreatePersonalDraft(state, document, owner)
+}
+
+function syncSessionDraftToHead(state, document, actor) {
+  const head = getHeadVersion(state, document)
+  const sessionDraft = getSessionDraft(state, document.id)
+  if (!sessionDraft) return
+
+  sessionDraft.title = head.title
+  sessionDraft.content = head.content
+  sessionDraft.parentVersionId = head.id
+  sessionDraft.needsRebase = false
+  sessionDraft.updatedAt = now()
+  sessionDraft.author = userRef(actor)
+  syncDocumentFromDraft(document, sessionDraft)
+}
+
+function getDraftProjection(state, document, actor) {
+  if (isOwnerHubWorkflow(document)) {
+    if (document.ownerId === actor.id) {
+      const ownerDraft = getOrCreateOwnerPersonalDraft(state, document)
+      return toDraftProjection(ownerDraft, actor)
+    }
+    const head = getHeadVersion(state, document)
+    return toDraftProjection(head, head.author)
+  }
+
+  const sessionDraft = getSessionDraft(state, document.id)
+  if (sessionDraft) {
+    return toDraftProjection(sessionDraft, sessionDraft.author)
+  }
+
+  const head = getHeadVersion(state, document)
+  return toDraftProjection(head, head.author)
 }
 
 function capabilitiesRound(document, actor) {
@@ -300,6 +400,7 @@ function capabilitiesRound(document, actor) {
     canTakeLock: lockFree,
     canEditActorDraft: false,
     canFixVersion: hasLock,
+    canSubmitDraft: false,
     canSubmitEdit: false,
     canApplyEdit: false,
     canComment: true,
@@ -317,8 +418,9 @@ function capabilitiesOwnerHub(document, actor) {
     canTakeLock: false,
     canEditActorDraft: !isOwner,
     canFixVersion: isOwner,
+    canSubmitDraft: !isOwner,
     canSubmitEdit: !isOwner,
-    canApplyEdit: isOwner,
+    canApplyEdit: false,
     canComment: true,
     canViewReview: true,
     isActiveEditor: isOwner,
@@ -327,99 +429,25 @@ function capabilitiesOwnerHub(document, actor) {
 }
 
 function capabilities(document, actor) {
-  if (isRoundWorkflow(document)) {
-    return capabilitiesRound(document, actor)
-  }
-  if (isOwnerHubWorkflow(document)) {
-    return capabilitiesOwnerHub(document, actor)
-  }
+  if (isRoundWorkflow(document)) return capabilitiesRound(document, actor)
+  if (isOwnerHubWorkflow(document)) return capabilitiesOwnerHub(document, actor)
   if (isHandoffWorkflow(document)) {
     const hasTurn = document.currentActorId === actor.id
     return {
       canEditDraft: hasTurn,
       canTakeLock: false,
-      canEditActorDraft: !hasTurn,
+      canEditActorDraft: false,
       canFixVersion: hasTurn,
-      canSubmitEdit: !hasTurn,
-      canApplyEdit: hasTurn,
+      canSubmitDraft: false,
+      canSubmitEdit: false,
+      canApplyEdit: false,
       canComment: true,
-      canViewReview: true,
+      canViewReview: false,
       isActiveEditor: hasTurn,
       isOwner: document.ownerId === actor.id,
     }
   }
   return capabilitiesRound(document, actor)
-}
-
-function findActorDraft(state, documentId, userId) {
-  return state.actorDrafts.find((item) => item.documentId === documentId && item.userId === userId)
-}
-
-function getActorDraftRecord(state, documentId, userId) {
-  const draft = findActorDraft(state, documentId, userId)
-  if (!draft) throw apiError('NOT_FOUND', 'Actor draft not found')
-  return draft
-}
-
-function getOrCreateActorDraft(state, document, actor) {
-  const head = getHeadVersion(state, document)
-  let actorDraft = findActorDraft(state, document.id, actor.id)
-
-  if (!actorDraft) {
-    actorDraft = {
-      documentId: document.id,
-      userId: actor.id,
-      baseVersionId: document.headVersionId,
-      title: head.title,
-      content: head.content,
-      updatedAt: now(),
-      needsRebase: false,
-    }
-    state.actorDrafts.push(actorDraft)
-    return actorDraft
-  }
-
-  if (actorDraft.baseVersionId !== document.headVersionId && !actorDraft.needsRebase) {
-    actorDraft.needsRebase = true
-  }
-
-  return actorDraft
-}
-
-function markActorDraftsStale(state, document, oldHeadVersionId) {
-  for (const actorDraft of state.actorDrafts) {
-    if (actorDraft.documentId !== document.id) continue
-    if (actorDraft.baseVersionId !== oldHeadVersionId) continue
-    actorDraft.needsRebase = true
-  }
-}
-
-function replaceRangeInContent(content, anchor, suggestedText, baseContent) {
-  const { from, to, quotedText } = anchor
-  if (content.slice(from, to) === quotedText) {
-    return content.slice(0, from) + suggestedText + content.slice(to)
-  }
-
-  const index = content.indexOf(quotedText)
-  if (index >= 0) {
-    return content.slice(0, index) + suggestedText + content.slice(index + quotedText.length)
-  }
-
-  if (baseContent.slice(from, to) === quotedText) {
-    throw apiError('VALIDATION', 'Anchor no longer matches draft')
-  }
-
-  throw apiError('VALIDATION', 'Anchor not found in draft')
-}
-
-function toActorDraftDto(actorDraft) {
-  return clone({
-    baseVersionId: actorDraft.baseVersionId,
-    title: actorDraft.title,
-    content: actorDraft.content,
-    updatedAt: actorDraft.updatedAt,
-    needsRebase: Boolean(actorDraft.needsRebase),
-  })
 }
 
 function asExcerpt(content) {
@@ -430,13 +458,13 @@ function toSummary(document, state) {
   const head = getHeadVersion(state, document)
   return {
     id: document.id,
-    title: document.draft.title,
-    excerpt: asExcerpt(document.draft.content),
+    title: document.title,
+    excerpt: asExcerpt(head.content),
     ownerId: document.ownerId,
     ownerName: document.createdBy.name,
-    headVersionNumber: head.number,
+    headVersionNumber: head.versionNumber,
     asyncWorkflow: document.asyncWorkflow,
-    updatedAt: document.draft.updatedAt,
+    updatedAt: document.updatedAt,
     createdAt: document.createdAt,
   }
 }
@@ -452,8 +480,8 @@ function toDocumentDetail(document, state, actor) {
     activeEditorId: document.activeEditorId ? clone(document.activeEditorId) : null,
     currentActorId: document.currentActorId,
     headVersionId: document.headVersionId,
-    headVersionNumber: head.number,
-    draft: clone(document.draft),
+    headVersionNumber: head.versionNumber,
+    draft: clone(getDraftProjection(state, document, actor)),
     capabilities: capabilities(document, actor),
     createdAt: document.createdAt,
   }
@@ -465,16 +493,46 @@ function assertCapability(document, actor, key) {
   }
 }
 
-function supersedeEditsForHead(state, document, incorporatedEditIds = []) {
-  const incorporated = new Set(incorporatedEditIds)
-  for (const edit of state.edits) {
-    if (edit.documentId !== document.id) continue
-    if (edit.baseVersionId !== document.headVersionId) continue
-    if (incorporated.has(edit.id)) continue
-    if (edit.status === 'pending' || edit.status === 'applied') {
-      edit.status = 'superseded'
+function getWritableDraft(state, document, actor) {
+  if (isOwnerHubWorkflow(document)) {
+    if (document.ownerId === actor.id) {
+      return getOrCreateOwnerPersonalDraft(state, document, actor)
     }
+    return getOrCreatePersonalDraft(state, document, actor)
   }
+
+  return getOrCreateSessionDraft(state, document, actor)
+}
+
+function publishDraft(state, document, actor, input = {}) {
+  const head = getHeadVersion(state, document)
+  const oldCanonicalId = document.headVersionId
+
+  let draft
+  if (isOwnerHubWorkflow(document)) {
+    draft =
+      getOwnerPersonalDraft(state, document) ??
+      getOrCreateOwnerPersonalDraft(state, document)
+  } else {
+    draft = getSessionDraft(state, document.id)
+    if (!draft) throw apiError('VALIDATION', 'Session draft not found')
+  }
+
+  const nextNumber = head.versionNumber + 1
+  const summary = input.summary?.trim() || `Версия ${nextNumber}`
+
+  promoteDraft(draft, { versionNumber: nextNumber, summary })
+  draft.updatedAt = now()
+
+  document.headVersionId = draft.id
+  syncDocumentFromVersion(document, draft)
+  markDraftsStale(state, document.id, oldCanonicalId)
+
+  if (isRoundWorkflow(document)) {
+    document.activeEditorId = null
+  }
+
+  return draft
 }
 
 export const localDocumentsApi = {
@@ -495,7 +553,6 @@ export const localDocumentsApi = {
     const content = input.content ?? `# ${title}\n\n`
     const documentId = makeId()
     const versionId = makeId()
-
     const workflow = input.asyncWorkflow || DEFAULT_WORKFLOW
 
     const document = {
@@ -505,34 +562,44 @@ export const localDocumentsApi = {
       collaborationMode: 'async',
       asyncWorkflow: workflow,
       headVersionId: versionId,
+      versionNumber: 1,
       activeEditorId: null,
       currentActorId: workflow === 'handoff' ? actor.id : undefined,
-      draft: {
-        title,
-        content,
-        updatedAt: timestamp,
-        updatedBy: author,
-      },
-      createdAt: timestamp,
-    }
-
-    const version = {
-      id: versionId,
-      documentId,
-      parentVersionId: null,
-      number: 1,
-      author,
       title,
-      content,
-      summary: 'Создание документа',
-      incorporatedEditIds: [],
+      updatedAt: timestamp,
       createdAt: timestamp,
     }
 
     state.documents.unshift(document)
-    state.versions.push(version)
-    writeState(state)
+    state.versions.push(
+      createPublishedVersion({
+        id: versionId,
+        documentId,
+        author,
+        title,
+        content,
+        versionNumber: 1,
+        summary: 'Создание документа',
+        createdAt: timestamp,
+      }),
+    )
 
+    if (isOwnerHubWorkflow(document)) {
+      state.versions.push(
+        createDraftVersion({
+          id: makeId(),
+          documentId,
+          author,
+          title,
+          content,
+          parentVersionId: versionId,
+          draftRole: ROLE_PERSONAL,
+          createdAt: timestamp,
+        }),
+      )
+    }
+
+    writeState(state)
     return clone(toDocumentDetail(document, state, actor))
   },
 
@@ -545,43 +612,37 @@ export const localDocumentsApi = {
   async getEditorBundle(documentId, actor) {
     const state = readState()
     const document = getDocumentRecord(state, documentId)
-    const versions = state.versions
-      .filter((item) => item.documentId === documentId)
-      .sort((a, b) => b.number - a.number)
-    const edits = isOwnerHubWorkflow(document)
-      ? state.edits
-          .filter(
-            (item) =>
-              item.documentId === documentId &&
-              item.baseVersionId === document.headVersionId &&
-              item.status === 'pending',
-          )
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      : []
+    const versions = listPublishedVersions(state, documentId).map((item) => toPublishedDto(item))
     const comments = state.comments
       .filter((item) => item.documentId === documentId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 
     const head = getHeadVersion(state, document)
     const caps = capabilities(document, actor)
-    const actorDraft = caps.canEditActorDraft ? getOrCreateActorDraft(state, document, actor) : null
+    let actorDraft = null
 
-    if (actorDraft) {
+    if (caps.canEditActorDraft) {
+      actorDraft = getOrCreatePersonalDraft(state, document, actor)
       writeState(state)
     }
+
+    const submittedDrafts = caps.canViewReview && document.ownerId === actor.id
+      ? listSubmittedDrafts(state, document, actor).map((item) => toSubmittedDraftDto(item))
+      : []
 
     return clone({
       document: toDocumentDetail(document, state, actor),
       versions,
-      edits,
+      submittedDrafts,
+      edits: [],
       comments,
       head: {
         id: head.id,
-        number: head.number,
+        number: head.versionNumber,
         title: head.title,
         content: head.content,
       },
-      actorDraft: actorDraft ? toActorDraftDto(actorDraft) : null,
+      actorDraft: actorDraft ? toPersonalDraftDto(actorDraft) : null,
     })
   },
 
@@ -592,8 +653,8 @@ export const localDocumentsApi = {
       throw apiError('VALIDATION', 'Edit lock is only used in round workflow')
     }
     ensureRoundEditLock(document, actor)
-    const head = getHeadVersion(state, document)
-    syncDraftToHead(document, head, actor)
+    getOrCreateSessionDraft(state, document, actor)
+    syncSessionDraftToHead(state, document, actor)
     writeState(state)
     return clone(toDocumentDetail(document, state, actor))
   },
@@ -608,11 +669,17 @@ export const localDocumentsApi = {
     if (!lockUserId || lockUserId !== actor.id) {
       throw apiError('FORBIDDEN', 'You do not hold the edit lock')
     }
+
     const discardChanges = input.discardChanges !== false
     if (discardChanges) {
-      const head = getHeadVersion(state, document)
-      syncDraftToHead(document, head, actor)
+      syncSessionDraftToHead(state, document, actor)
+      const sessionDraft = getSessionDraft(state, document.id)
+      if (sessionDraft) {
+        const index = state.versions.findIndex((item) => item.id === sessionDraft.id)
+        if (index >= 0) state.versions.splice(index, 1)
+      }
     }
+
     document.activeEditorId = null
     writeState(state)
     return clone(toDocumentDetail(document, state, actor))
@@ -622,17 +689,49 @@ export const localDocumentsApi = {
     const state = readState()
     const document = getDocumentRecord(state, documentId)
     const head = getHeadVersion(state, document)
-    const draftDiffers =
-      document.draft.title !== head.title || document.draft.content !== head.content
 
-    if (draftDiffers) {
-      return clone({
-        title: document.draft.title,
-        content: document.draft.content,
-        source: 'draft',
-        headVersionId: head.id,
-        headVersionNumber: head.number,
-      })
+    if (isOwnerHubWorkflow(document) && document.ownerId === actor.id) {
+      const ownerDraft = getOwnerPersonalDraft(state, document)
+      if (
+        ownerDraft &&
+        (ownerDraft.title !== head.title || ownerDraft.content !== head.content)
+      ) {
+        return clone({
+          title: ownerDraft.title,
+          content: ownerDraft.content,
+          source: 'draft',
+          headVersionId: head.id,
+          headVersionNumber: head.versionNumber,
+        })
+      }
+    } else if (!isOwnerHubWorkflow(document)) {
+      const sessionDraft = getSessionDraft(state, document.id)
+      if (
+        sessionDraft &&
+        (sessionDraft.title !== head.title || sessionDraft.content !== head.content)
+      ) {
+        return clone({
+          title: sessionDraft.title,
+          content: sessionDraft.content,
+          source: 'draft',
+          headVersionId: head.id,
+          headVersionNumber: head.versionNumber,
+        })
+      }
+    } else {
+      const personalDraft = getPersonalDraft(state, document.id, actor.id)
+      if (
+        personalDraft &&
+        (personalDraft.title !== head.title || personalDraft.content !== head.content)
+      ) {
+        return clone({
+          title: personalDraft.title,
+          content: personalDraft.content,
+          source: 'draft',
+          headVersionId: head.id,
+          headVersionNumber: head.versionNumber,
+        })
+      }
     }
 
     return clone({
@@ -640,7 +739,7 @@ export const localDocumentsApi = {
       content: head.content,
       source: 'head',
       headVersionId: head.id,
-      headVersionNumber: head.number,
+      headVersionNumber: head.versionNumber,
     })
   },
 
@@ -653,14 +752,17 @@ export const localDocumentsApi = {
       ensureRoundEditLock(document, actor)
     }
 
+    const draft = getWritableDraft(state, document, actor)
+
     if (input.title !== undefined) {
-      document.draft.title = input.title?.trim() || 'Untitled document'
+      draft.title = input.title?.trim() || 'Untitled document'
     }
     if (input.content !== undefined) {
-      document.draft.content = input.content
+      draft.content = input.content
     }
-    document.draft.updatedAt = now()
-    document.draft.updatedBy = userRef(actor)
+    draft.updatedAt = now()
+    draft.author = userRef(actor)
+    syncDocumentFromDraft(document, draft)
 
     writeState(state)
     return clone(toDocumentDetail(document, state, actor))
@@ -671,7 +773,7 @@ export const localDocumentsApi = {
     const document = getDocumentRecord(state, documentId)
     assertCapability(document, actor, 'canEditActorDraft')
 
-    const actorDraft = getOrCreateActorDraft(state, document, actor)
+    const actorDraft = getOrCreatePersonalDraft(state, document, actor)
 
     if (input.title !== undefined) {
       actorDraft.title = input.title?.trim() || 'Untitled document'
@@ -682,7 +784,7 @@ export const localDocumentsApi = {
     actorDraft.updatedAt = now()
 
     writeState(state)
-    return toActorDraftDto(actorDraft)
+    return toPersonalDraftDto(actorDraft)
   },
 
   async rebaseActorDraft(documentId, actor) {
@@ -691,121 +793,92 @@ export const localDocumentsApi = {
     assertCapability(document, actor, 'canEditActorDraft')
 
     const head = getHeadVersion(state, document)
-    let actorDraft = findActorDraft(state, document.id, actor.id)
+    let actorDraft = getPersonalDraft(state, document.id, actor.id)
 
     if (!actorDraft) {
-      actorDraft = getOrCreateActorDraft(state, document, actor)
+      actorDraft = getOrCreatePersonalDraft(state, document, actor)
     } else {
-      actorDraft.baseVersionId = document.headVersionId
+      actorDraft.parentVersionId = document.headVersionId
       actorDraft.title = head.title
       actorDraft.content = head.content
       actorDraft.needsRebase = false
+      actorDraft.submitted = false
       actorDraft.updatedAt = now()
     }
 
     writeState(state)
-    return toActorDraftDto(actorDraft)
+    return toPersonalDraftDto(actorDraft)
   },
 
-  async submitActorEdit(documentId, actor, input) {
+  async submitDraft(documentId, actor) {
     const state = readState()
     const document = getDocumentRecord(state, documentId)
-    assertCapability(document, actor, 'canSubmitEdit')
+    assertCapability(document, actor, 'canSubmitDraft')
 
-    const actorDraft = getActorDraftRecord(state, documentId, actor.id)
+    const actorDraft = getPersonalDraft(state, document.id, actor.id)
     const head = getHeadVersion(state, document)
 
-    if (actorDraft.baseVersionId !== document.headVersionId) {
+    if (!actorDraft) throw apiError('NOT_FOUND', 'Actor draft not found')
+
+    if (actorDraft.parentVersionId !== document.headVersionId) {
       throw apiError('VALIDATION', 'Draft is outdated; rebase from current version first')
     }
-
-    const summary = input.summary?.trim()
-    if (!summary) throw apiError('VALIDATION', 'Summary is required')
 
     if (actorDraft.title === head.title && actorDraft.content === head.content) {
       throw apiError('VALIDATION', 'No changes to submit')
     }
 
-    const edit = {
-      id: makeId(),
-      documentId,
-      baseVersionId: document.headVersionId,
-      author: userRef(actor),
-      scope: 'document',
-      summary,
-      status: 'pending',
-      createdAt: now(),
-      title: actorDraft.title,
-      content: actorDraft.content,
-    }
-
-    state.edits.unshift(edit)
-
-    actorDraft.title = head.title
-    actorDraft.content = head.content
-    actorDraft.needsRebase = false
+    actorDraft.submitted = true
     actorDraft.updatedAt = now()
 
     writeState(state)
-    return clone(edit)
+    return toPersonalDraftDto(actorDraft)
+  },
+
+  async submitActorEdit(documentId, actor, input = {}) {
+    await this.submitDraft(documentId, actor)
+    const state = readState()
+    const draft = getPersonalDraft(state, documentId, actor.id)
+    return clone({
+      id: draft.id,
+      documentId,
+      baseVersionId: draft.parentVersionId,
+      author: clone(draft.author),
+      scope: 'document',
+      summary: input.summary?.trim() || 'Отправленный черновик',
+      status: 'pending',
+      title: draft.title,
+      content: draft.content,
+      createdAt: draft.updatedAt,
+    })
   },
 
   async listVersions(documentId) {
     const state = readState()
     getDocumentRecord(state, documentId)
-    return clone(
-      state.versions
-        .filter((item) => item.documentId === documentId)
-        .sort((a, b) => b.number - a.number),
-    )
+    return clone(listPublishedVersions(state, documentId).map((item) => toPublishedDto(item)))
   },
 
   async getVersion(documentId, versionId) {
     const state = readState()
-    return clone(getVersionRecord(state, documentId, versionId))
+    const version = getVersionRecord(state, documentId, versionId)
+    return clone(toPublishedDto(version))
   },
 
-  async fixVersion(documentId, actor, input) {
+  async publish(documentId, actor, input = {}) {
     const state = readState()
     const document = getDocumentRecord(state, documentId)
     assertCapability(document, actor, 'canFixVersion')
-
-    const head = getHeadVersion(state, document)
-    const oldHeadVersionId = document.headVersionId
-    const incorporatedEditIds = input.incorporatedEditIds || []
-    const versionId = makeId()
-    const timestamp = now()
-    const nextNumber = head.number + 1
-    const summary = input.summary?.trim() || `Версия ${nextNumber}`
-
-    const version = {
-      id: versionId,
-      documentId,
-      parentVersionId: head.id,
-      number: nextNumber,
-      author: userRef(actor),
-      title: document.draft.title,
-      content: document.draft.content,
-      summary,
-      incorporatedEditIds: [...incorporatedEditIds],
-      createdAt: timestamp,
-    }
-
-    state.versions.push(version)
-    document.headVersionId = versionId
-    supersedeEditsForHead(state, document, incorporatedEditIds)
-    markActorDraftsStale(state, document, oldHeadVersionId)
-
-    if (isRoundWorkflow(document)) {
-      document.activeEditorId = null
-      syncDraftToHead(document, version, actor)
-    }
-
+    const version = publishDraft(state, document, actor, input)
     writeState(state)
     return clone({
-      version,
+      version: toPublishedDto(version),
       document: toDocumentDetail(document, state, actor),
     })
+  },
+
+  async fixVersion(documentId, actor, input = {}) {
+    return this.publish(documentId, actor, input)
   },
 
   async restoreVersionToDraft(documentId, versionId, actor) {
@@ -823,129 +896,37 @@ export const localDocumentsApi = {
       assertCapability(document, actor, 'canEditDraft')
     }
 
-    document.draft.title = version.title
-    document.draft.content = version.content
-    document.draft.updatedAt = now()
-    document.draft.updatedBy = userRef(actor)
+    const draft = getWritableDraft(state, document, actor)
+    draft.title = version.title
+    draft.content = version.content
+    draft.parentVersionId = document.headVersionId
+    draft.needsRebase = false
+    draft.updatedAt = now()
+    draft.author = userRef(actor)
+    syncDocumentFromDraft(document, draft)
 
     writeState(state)
     return clone(toDocumentDetail(document, state, actor))
   },
 
-  async listEdits(documentId, actor, filter = {}) {
-    const state = readState()
-    const document = getDocumentRecord(state, documentId)
-    let items = state.edits.filter((item) => item.documentId === documentId)
-    if (filter.baseVersionId) {
-      items = items.filter((item) => item.baseVersionId === filter.baseVersionId)
-    } else if (filter.status === 'pending') {
-      items = items.filter((item) => item.baseVersionId === document.headVersionId)
-    }
-    if (filter.status) {
-      items = items.filter((item) => item.status === filter.status)
-    }
-    return clone(items.sort((a, b) => b.createdAt.localeCompare(a.createdAt)))
+  async listEdits() {
+    return []
   },
 
-  async submitEdit(documentId, actor, input) {
-    const state = readState()
-    const document = getDocumentRecord(state, documentId)
-    assertCapability(document, actor, 'canSubmitEdit')
-
-    getVersionRecord(state, documentId, input.baseVersionId)
-
-    const summary = input.summary?.trim()
-    if (!summary) throw apiError('VALIDATION', 'Summary is required')
-
-    if (input.scope === 'document') {
-      if (!input.content?.trim()) throw apiError('VALIDATION', 'Content is required for document edit')
-    } else if (input.scope === 'range') {
-      if (!input.anchor?.quotedText?.trim()) throw apiError('VALIDATION', 'Anchor is required for range edit')
-      if (input.suggestedText === undefined) throw apiError('VALIDATION', 'Suggested text is required')
-    } else {
-      throw apiError('VALIDATION', 'Invalid edit scope')
-    }
-
-    const edit = {
-      id: makeId(),
-      documentId,
-      baseVersionId: input.baseVersionId,
-      author: userRef(actor),
-      scope: input.scope,
-      summary,
-      status: 'pending',
-      createdAt: now(),
-    }
-
-    if (input.scope === 'document') {
-      edit.title = input.title?.trim() || document.draft.title
-      edit.content = input.content
-    } else {
-      edit.anchor = clone(input.anchor)
-      edit.suggestedText = input.suggestedText
-    }
-
-    state.edits.unshift(edit)
-    writeState(state)
-    return clone(edit)
+  async submitEdit() {
+    throw apiError('VALIDATION', 'Use submitDraft in owner hub workflow')
   },
 
-  async applyEdit(documentId, editId, actor) {
-    const state = readState()
-    const document = getDocumentRecord(state, documentId)
-    assertCapability(document, actor, 'canApplyEdit')
-    const edit = getEditRecord(state, documentId, editId)
-
-    if (edit.status !== 'pending') throw apiError('VALIDATION', 'Edit is not pending')
-
-    if (edit.scope === 'document') {
-      document.draft.title = edit.title
-      document.draft.content = edit.content
-    } else {
-      const base = getVersionRecord(state, documentId, edit.baseVersionId)
-      document.draft.content = replaceRangeInContent(
-        document.draft.content,
-        edit.anchor,
-        edit.suggestedText,
-        base.content,
-      )
-    }
-
-    document.draft.updatedAt = now()
-    document.draft.updatedBy = userRef(actor)
-    edit.status = 'applied'
-
-    writeState(state)
-    return clone({
-      edit,
-      document: toDocumentDetail(document, state, actor),
-    })
+  async applyEdit() {
+    throw apiError('VALIDATION', 'Apply is not supported; merge manually in owner draft')
   },
 
-  async rejectEdit(documentId, editId, actor) {
-    const state = readState()
-    const document = getDocumentRecord(state, documentId)
-    assertCapability(document, actor, 'canApplyEdit')
-    const edit = getEditRecord(state, documentId, editId)
-
-    if (edit.status !== 'pending') throw apiError('VALIDATION', 'Edit is not pending')
-
-    edit.status = 'rejected'
-    writeState(state)
-    return clone(edit)
+  async rejectEdit() {
+    throw apiError('VALIDATION', 'Reject is not supported; ignore submitted draft')
   },
 
-  async withdrawEdit(documentId, editId, actor) {
-    const state = readState()
-    getDocumentRecord(state, documentId)
-    const edit = getEditRecord(state, documentId, editId)
-
-    if (edit.author.id !== actor.id) throw apiError('FORBIDDEN', 'Only author can withdraw')
-    if (edit.status !== 'pending') throw apiError('VALIDATION', 'Edit is not pending')
-
-    edit.status = 'rejected'
-    writeState(state)
-    return clone(edit)
+  async withdrawEdit() {
+    throw apiError('VALIDATION', 'Withdraw is not supported; edit personal draft')
   },
 
   async listComments(documentId, actor, filter = {}) {

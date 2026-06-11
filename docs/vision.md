@@ -19,13 +19,13 @@
 
 ### Async (как Word) — текущий фокус
 
-- **Версии** — опубликованные снимки (`kind: published`); фиксация — **promote** черновика ([ADR-017](./decisions.md#adr-017-черновики-как-versions-три-таблицы)).
+- **Версии** — опубликованные снимки (`kind: published`); фиксация — **promote** черновика ([хранение](./decisions.md#хранение)).
 - **Draft** — строки `versions` с `kind: draft`; в round/handoff — один session draft; в ownerHub — personal draft на участника.
 - Комментарии к **опубликованным** версиям.
 - Diff между версиями; в ownerHub owner собирает итог в своём черновике (без отдельных submissions).
 - Без realtime-синхронизации на первом этапе.
 
-Подрежимы async — [async-workflows.md](./async-workflows.md). **По умолчанию:** [round](./async-workflows.md#round-по-раундам) ([ADR-015](./decisions.md#adr-015-round--базовый-async-подрежим)).
+Подрежимы async — [async-workflows.md](./async-workflows.md). **По умолчанию:** [round](./async-workflows.md#round) ([decisions](./decisions.md#round)).
 
 ### Live (как Google Docs) — отложено
 
