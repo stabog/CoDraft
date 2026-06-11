@@ -19,10 +19,10 @@
 
 ### Async (как Word) — текущий фокус
 
-- **Версии** — фиксация по раундам (`fixVersion`).
-- **Draft** — рабочая копия между фиксациями; один редактор за раз в базовом режиме.
-- Комментарии к **замороженным версиям**.
-- Diff между версиями; merge proposals — в расширении owner hub.
+- **Версии** — опубликованные снимки (`kind: published`); фиксация — **promote** черновика ([ADR-017](./decisions.md#adr-017-черновики-как-versions-три-таблицы)).
+- **Draft** — строки `versions` с `kind: draft`; в round/handoff — один session draft; в ownerHub — personal draft на участника.
+- Комментарии к **опубликованным** версиям.
+- Diff между версиями; в ownerHub owner собирает итог в своём черновике (без отдельных submissions).
 - Без realtime-синхронизации на первом этапе.
 
 Подрежимы async — [async-workflows.md](./async-workflows.md). **По умолчанию:** [round](./async-workflows.md#round-по-раундам) ([ADR-015](./decisions.md#adr-015-round--базовый-async-подрежим)).

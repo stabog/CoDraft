@@ -30,7 +30,9 @@
 
 **Решение:** Version — неизменяемый снимок. Draft — общая рабочая копия с автосохранением. Фиксация не меняет семантику draft, только добавляет узел в историю.
 
-**Последствия:** `hasChangesSinceVersion` = draft ≠ head.
+**Уточнение ([ADR-017](#adr-017-черновики-как-versions-три-таблицы)):** immutable только `kind: published`; `kind: draft` — mutable до **promote**. Одна таблица `versions`, разные правила по `kind`.
+
+**Последствия:** `hasChangesSinceVersion` = draft ≠ canonical.
 
 ---
 
@@ -86,6 +88,8 @@
 
 ## ADR-010: Edit и Comment как два типа замечаний
 
+> **Частично заменён** [ADR-017](#adr-017-черновики-как-versions-три-таблицы): в ownerHub правки участников — **personal draft** + `submitted`, не отдельная сущность `Edit`. **Comment** остаётся. Ниже — модель прототипа и раннего обсуждения.
+
 **Контекст:** В ревью нужно различать правку (можно применить) и комментарий (учесть или отклонить). Proposal как имя сущности смешивал смысл.
 
 **Решение:**
@@ -126,6 +130,8 @@
 ---
 
 ## ADR-011: Head, draft и submit
+
+> **Уточнён** [ADR-017](#adr-017-черновики-как-versions-три-таблицы): head = `published`; draft = `versions.kind: draft`; submit = флаг `submitted` на personal draft (без `Edit`). Актуальная модель — [domain-model.md](./domain-model.md).
 
 **Контекст:** Термин «draft» смешивал каноническую рабочую копию и личный черновик участника. Правки к тексту на md ломают якоря при параллельной работе. Нужна ясная модель «оригинал + рабочая копия».
 
@@ -233,6 +239,8 @@
 
 ## ADR-016: Единая таблица drafts и сессия редактирования
 
+> **Частично заменён** [ADR-017](#adr-017-черновики-как-versions-три-таблицы): отдельные `drafts` и `submissions` не используем; черновики — строки `versions`. Ниже — промежуточное решение, оставлено для истории.
+
 **Контекст:** В прототипе черновик встроен в `document.draft`, личные fork'и — в `actorDrafts[]`, эксклюзив round — в `activeEditorId` на document. Обсуждение показало: draft логичнее как **надстройка над version**; round и handoff делят **один** слот редактирования; owner hub — параллельные fork'и без общего lock; канон публикуется через **новую version** при каждом «Сохранить».
 
 **Решение:**
@@ -241,7 +249,7 @@
 
 | Сущность | Роль |
 |----------|------|
-| `documents` | Метаданные, `head_version_id`, `async_workflow`; **`current_actor_id` только handoff** |
+| `documents` | Метаданные, `title`, `canonical_version_id`, `version_number`, `workflow`; **`turn_actor_id` только handoff** |
 | `versions` | Immutable снимки, линейная main-линия |
 | `drafts` | Mutable текст, всегда с `actor_id`; привязка `base_version_id` → versions |
 | `submissions` | Owner hub: замороженное предложение при submit (в API/DTO пока `Edit`) |
@@ -260,8 +268,8 @@ Diff не хранится ([ADR-007](#adr-007-diff-вычислять-не-хр
 - На документ **не больше одного активного session draft** (эксклюзивная сессия).
 - **Кто первый занял** — редактирует (`holder` / `actor_id` держателя сессии); остальные ждут.
 - **Round:** занять может любой участник, когда session draft свободен.
-- **Handoff:** занять может только `documents.current_actor_id`; после «Сохранить и передать …» — `fixVersion` + смена `current_actor_id`.
-- **`active_editor_id` на document не используется** в целевой модели (только `current_actor_id` в handoff).
+- **Handoff:** занять может только `documents.turn_actor_id`; после «Сохранить и передать …» — `fixVersion` + смена `turn_actor_id`.
+- **`active_editor_id` на document не используется** в целевой модели (эксклюзив на session draft; очередь — `turn_actor_id` только handoff).
 
 ### Owner hub — без общего lock
 
@@ -273,7 +281,7 @@ Diff не хранится ([ADR-007](#adr-007-diff-вычислять-не-хр
 
 ### Сохранение = новая version
 
-- **«Сохранить»** (`fixVersion`) — единственная публикация в канон: снимок session draft (round/handoff) или draft owner'а (hub) → vN+1, `head_version_id` обновляется.
+- **«Сохранить»** (`fixVersion`) — единственная публикация в канон: снимок session draft (round/handoff) или draft owner'а (hub) → vN+1, `canonical_version_id` и `document.title` обновляются.
 - **Autosave** во время сессии пишет только в draft, **не** создаёт version.
 - После `fixVersion` в round/handoff: session draft освобождается / сбрасывается к новому head.
 
@@ -281,11 +289,15 @@ Diff не хранится ([ADR-007](#adr-007-diff-вычислять-не-хр
 
 - Канонический draft owner'а после `fixVersion`: `base_version_id` и `content` синхронны с новым head.
 - **Личные** draft'ы участников с устаревшим `base_version_id`: содержимое **не затирается**, `needs_rebase = true`; rebase вручную от нового head.
-- Pending submissions к старому head → `superseded` (кроме `incorporated_edit_ids` в версии).
+- Pending submissions к старому canonical → `superseded` (кроме `incorporated_submission_ids` в version).
+
+### Имена полей (словарь)
+
+`headVersionId` → **`canonicalVersionId`**; `asyncWorkflow` → **`workflow`** (`ownerHub`); `currentActorId` → **`turnActorId`**; `headVersionNumber` / `number` → **`versionNumber`**; `Edit` → **`Submission`** в persistence. Подробно — [domain-model.md](./domain-model.md).
 
 ### Handoff в UI
 
-- Рядом с «Сохранить» — «Сохранить и передать …» с выбором получателя → `fixVersion` + `current_actor_id := to` (+ опционально `version.handoff.to`).
+- Рядом с «Сохранить» — «Сохранить и передать …» с выбором получателя → `fixVersion` + `turnActorId := to` (+ опционально `version.handoff.to`).
 
 ### Схлопывание версий (отложено)
 
@@ -299,17 +311,57 @@ Diff не хранится ([ADR-007](#adr-007-diff-вычислять-не-хр
 
 ---
 
+## ADR-017: Черновики как versions, три таблицы
+
+**Контекст:** Отдельные `drafts`, `submissions`, copy при submit и `applyEdit` усложняли модель. Нужен минимальный persistence и один механизм публикации.
+
+**Решение:**
+
+### Три таблицы
+
+`documents`, `versions`, `comments`. Черновики — `versions` с `kind: draft`.
+
+### Version: два kind
+
+| `kind` | Поведение |
+|--------|-----------|
+| `published` | Канон; `versionNumber`; **immutable**; без `parentVersionId` |
+| `draft` | Рабочая копия; `parentVersionId` → canonical; **mutable**; `draftRole`: `session` \| `personal` |
+
+### Публикация — только promote
+
+«Сохранить» меняет **ту же строку**: `kind: draft` → `published`, присваивается `versionNumber`. **Copy не используем.**
+
+- **round / handoff:** promote session draft.
+- **ownerHub:** promote **только** personal draft owner'а.
+
+### ownerHub без submissions
+
+- Участники: personal draft + флаг **`submitted`** (та же строка, без copy).
+- Owner видит personal draft'ы с `submitted=true` (живые, могут меняться до publish owner'а).
+- Owner **вручную** собирает итог в своём personal draft (правки + comments к published).
+- **Нет** `apply`/`reject`; отклонение — не переносить в свой draft / comment.
+- Publish owner'а не блокируется незасабмиченными черновиками.
+- После publish: `needsRebase` на draft'ах от старого canonical.
+
+### Имена
+
+`canonicalVersionId`, `workflow`, `turnActorId`, `versionNumber`, `authorId` на version. Handoff только на document.
+
+**Последствия:** [domain-model.md](./domain-model.md), [api-sketch.md](./api-sketch.md). Прототип (`edits`, `actorDrafts`) — legacy.
+
+---
+
 ## ADR-014: Видимость draft и публикация
 
 **Контекст:** Всегда видимые черновики всех участников дают координацию, но шум, давление и риск преждевременных конфликтов. Полная скрытность до submit — приватность, но сюрпризы при publish.
 
-**Решение:**
+**Решение** (уточнено [ADR-017](#adr-017-черновики-как-versions-три-таблицы)):
 
-- **Round / handoff:** один **session draft** — виден всем с правом чтения; эксклюзив на **запись** (держатель session draft; см. [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)).
-- **Owner hub:** участники не видят **живые** fork'и друг друга. Текст чужой работы — только после **submit** (в ленте `Edit` / review).
-- **Owner** (арбитр) в MVP видит **submitted** proposals; полная видимость всех server-side draft owner'у — опционально позже (гибрид с предупреждением при publish).
-- **Публикация head** (`fixVersion`): gate по **submitted** изменениям, не по незасабмиченным draft. Незасабмиченный draft участника **не блокирует** publish owner'а.
-- После publish: уведомление всем с незасабмиченным или устаревшим draft от старого head.
+- **Round / handoff:** session draft виден на чтение; эксклюзив на запись у держателя.
+- **Owner hub:** участники не видят чужие personal draft'ы до submit. Owner видит draft'ы с **`submitted=true`** (живой текст до publish owner'а).
+- **Публикация:** promote draft owner'а (hub) или session draft (round/handoff). Незасабмиченные черновики **не блокируют** publish.
+- После publish: `needsRebase`; уведомление участникам.
 
 **Сценарий:** owner публикует, участник правил, но не submit'ил → vN+1 из draft owner; правки участника **не в каноне**; draft участника needs rebase; уведомление.
 
@@ -329,20 +381,20 @@ Diff не хранится ([ADR-007](#adr-007-diff-вычислять-не-хр
 | Чистый Open (DAG без owner) | Только по запросу |
 | 3-way auto-merge | Ручной merge арбитра; auto только для совместимых hunks ([ADR-013](#adr-013-handoff-и-owner-hub-как-расширения-round)) |
 | Смена asyncWorkflow после создания | Избегать; миграция сложна |
-| Round: session draft, lock при правке | [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования); в прототипе — `activeEditorId` |
-| Личный draft per actor в storage | Owner hub ([ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования)); round/handoff — один session draft |
-| Схлопывание промежуточных versions | [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования); после стабилизации backend |
-| Owner видит все draft до submit | Опционально; MVP — только submitted ([ADR-014](#adr-014-видимость-draft-и-публикация)) |
+| Round: session draft | [ADR-017](#adr-017-черновики-как-versions-три-таблицы); прототип — `activeEditorId` |
+| Personal draft per actor | [ADR-017](#adr-017-черновики-как-versions-три-таблицы); `kind=draft`, `draftRole=personal` |
+| Схлопывание промежуточных versions | [ADR-017](#adr-017-черновики-как-versions-три-таблицы); после backend |
+| Owner видит submitted drafts | [ADR-014](#adr-014-видимость-draft-и-публикация), [ADR-017](#adr-017-черновики-как-versions-три-таблицы) |
 | PHP backend / OpenAPI | После стабилизации local-адаптера по [api-sketch.md](./api-sketch.md) |
 
 ## Расхождение с прототипом `front/`
 
-**Целевая модель:** `asyncWorkflow: round` по умолчанию ([ADR-015](#adr-015-round--базовый-async-подрежим)); хранение — [ADR-016](#adr-016-единая-таблица-drafts-и-сессия-редактирования) (`drafts` + versions; session draft в round/handoff; `current_actor_id` только handoff).
+**Целевая модель:** `workflow: round` по умолчанию ([ADR-015](#adr-015-round--базовый-async-подрежим)); хранение — [ADR-017](#adr-017-черновики-как-versions-три-таблицы) (`documents` + `versions` + `comments`; draft = version с `kind: draft`).
 
 **Реализовано (round, прототип):** `codraft.state.v4`, встроенный `document.draft`, `activeEditorId` на document (временная схема), `acquireEditLock` / `releaseEditLock`, `fixVersion`, capabilities, миграция v3→v4.
 
-**Реализовано (owner hub, прототип):** демо `owner_hub`, Edit/Comment, `actorDrafts[]` (целевой аналог — строки `drafts` per actor), submit/rebase/apply, ReviewPanel.
+**Реализовано (owner hub, прототип):** демо `ownerHub`, Edit/Comment, `actorDrafts[]` (целевой аналог — `versions` kind=draft), submit/rebase/apply, ReviewPanel.
 
-**Не реализовано:** единая таблица `drafts` в persistence; handoff (`current_actor_id`, «Сохранить и передать»); LLM tools; diff UI; HTTP backend; выбор workflow в UI.
+**Не реализовано:** целевая схема `versions.kind`; handoff (`turnActorId`, «Сохранить и передать»); `publish`/`submitDraft` вместо edits; LLM tools; diff UI; HTTP backend.
 
 **Расширения (опционально):** схлопывание промежуточных versions; явный выбор `owner_hub` при создании.
