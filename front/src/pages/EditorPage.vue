@@ -368,7 +368,7 @@ async function restoreVersion(versionId) {
                     title="Вернуться к просмотру документа"
                     @click="closeCompare"
                   >
-                    Закрыть
+                    Вернуться к просмотру
                   </button>
                 </template>
 
@@ -419,10 +419,10 @@ async function restoreVersion(versionId) {
                     v-else
                     type="button"
                     class="secondary compact"
-                    title="Закончить редактирование и открыть документ для всех участников"
+                    title="Вернуться к просмотру документа"
                     @click="closeSession(null)"
                   >
-                    Закрыть сессию
+                    Вернуться к просмотру
                   </button>
                 </template>
 

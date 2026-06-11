@@ -3,8 +3,10 @@ import {
   getLineKind,
   isBlockLevelLine,
   isTableBlock,
+  normalizeBlocksForDiff,
   splitMarkdownIntoBlocks,
 } from './markdownBlocks'
+import { normalizeMarkdownForDiff } from './markdownLineBreaks'
 import { renderMarkdownBlock, renderMarkdownSegment } from './markdownRender'
 import { renderTableDiffHtml } from './tableDiff'
 import {
@@ -117,63 +119,145 @@ function makeUnchangedRow(text) {
   }
 }
 
+function pairTwoLines(leftLine, rightLine) {
+  if (leftLine === rightLine) {
+    return makeUnchangedRow(leftLine)
+  }
+
+  if (wordSimilarity(leftLine, rightLine) > WORD_SIMILARITY_THRESHOLD) {
+    return makeModifiedLineRow(leftLine, rightLine)
+  }
+
+  return [makeRemovedRow(leftLine), makeAddedRow(rightLine)]
+}
+
 function pairReplacedLines(removedLines, addedLines) {
+  const parts = diffArrays(removedLines, addedLines)
   const rows = []
-  const maxLen = Math.max(removedLines.length, addedLines.length)
 
-  for (let index = 0; index < maxLen; index += 1) {
-    const leftLine = removedLines[index]
-    const rightLine = addedLines[index]
+  for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+    const part = parts[partIndex]
+    const next = parts[partIndex + 1]
 
-    if (leftLine === undefined) {
-      rows.push(makeAddedRow(rightLine))
+    if (!part.removed && !part.added) {
+      for (const line of part.value) {
+        rows.push(makeUnchangedRow(line))
+      }
       continue
     }
 
-    if (rightLine === undefined) {
-      rows.push(makeRemovedRow(leftLine))
+    if (part.removed && next?.added) {
+      const pairCount = Math.max(part.count, next.count)
+
+      for (let index = 0; index < pairCount; index += 1) {
+        const leftLine = part.value[index]
+        const rightLine = next.value[index]
+
+        if (leftLine === undefined) {
+          rows.push(makeAddedRow(rightLine))
+          continue
+        }
+
+        if (rightLine === undefined) {
+          rows.push(makeRemovedRow(leftLine))
+          continue
+        }
+
+        const paired = pairTwoLines(leftLine, rightLine)
+        if (Array.isArray(paired)) {
+          rows.push(...paired)
+        } else {
+          rows.push(paired)
+        }
+      }
+
+      partIndex += 1
       continue
     }
 
-    if (wordSimilarity(leftLine, rightLine) > WORD_SIMILARITY_THRESHOLD) {
-      rows.push(makeModifiedLineRow(leftLine, rightLine))
-    } else {
-      rows.push(makeRemovedRow(leftLine))
-      rows.push(makeAddedRow(rightLine))
+    if (part.removed) {
+      for (const line of part.value) {
+        rows.push(makeRemovedRow(line))
+      }
+      continue
+    }
+
+    if (part.added) {
+      for (const line of part.value) {
+        rows.push(makeAddedRow(line))
+      }
     }
   }
 
   return rows
 }
 
+function pairTwoBlocks(leftBlock, rightBlock) {
+  if (leftBlock === rightBlock) {
+    return [makeUnchangedRow(leftBlock)]
+  }
+
+  if (isTableBlock(leftBlock) && isTableBlock(rightBlock)) {
+    return [makeModifiedTableBlockRow(leftBlock, rightBlock)]
+  }
+
+  if (wordSimilarity(leftBlock, rightBlock) > WORD_SIMILARITY_THRESHOLD) {
+    return pairReplacedLines(splitContentLines(leftBlock), splitContentLines(rightBlock))
+  }
+
+  return [makeRemovedRow(leftBlock), makeAddedRow(rightBlock)]
+}
+
 function pairReplacedBlocks(removedBlocks, addedBlocks) {
+  const parts = diffArrays(removedBlocks, addedBlocks)
   const rows = []
-  const maxLen = Math.max(removedBlocks.length, addedBlocks.length)
 
-  for (let index = 0; index < maxLen; index += 1) {
-    const leftBlock = removedBlocks[index]
-    const rightBlock = addedBlocks[index]
+  for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+    const part = parts[partIndex]
+    const next = parts[partIndex + 1]
 
-    if (leftBlock === undefined) {
-      rows.push(makeAddedRow(rightBlock))
+    if (!part.removed && !part.added) {
+      for (const block of part.value) {
+        rows.push(makeUnchangedRow(block))
+      }
       continue
     }
 
-    if (rightBlock === undefined) {
-      rows.push(makeRemovedRow(leftBlock))
+    if (part.removed && next?.added) {
+      const pairCount = Math.max(part.count, next.count)
+
+      for (let index = 0; index < pairCount; index += 1) {
+        const leftBlock = part.value[index]
+        const rightBlock = next.value[index]
+
+        if (leftBlock === undefined) {
+          rows.push(makeAddedRow(rightBlock))
+          continue
+        }
+
+        if (rightBlock === undefined) {
+          rows.push(makeRemovedRow(leftBlock))
+          continue
+        }
+
+        rows.push(...pairTwoBlocks(leftBlock, rightBlock))
+      }
+
+      partIndex += 1
       continue
     }
 
-    if (isTableBlock(leftBlock) && isTableBlock(rightBlock)) {
-      rows.push(makeModifiedTableBlockRow(leftBlock, rightBlock))
+    if (part.removed) {
+      for (const block of part.value) {
+        rows.push(makeRemovedRow(block))
+      }
       continue
     }
 
-    if (wordSimilarity(leftBlock, rightBlock) > WORD_SIMILARITY_THRESHOLD) {
-      rows.push(...pairReplacedLines(splitContentLines(leftBlock), splitContentLines(rightBlock)))
-    } else {
-      rows.push(makeRemovedRow(leftBlock))
-      rows.push(makeAddedRow(rightBlock))
+    if (part.added) {
+      for (const block of part.value) {
+        rows.push(makeAddedRow(block))
+      }
     }
   }
 
@@ -192,11 +276,17 @@ function pushSinglePartRows(rows, part) {
   }
 }
 
+function splitBlocksForDiff(text) {
+  return normalizeBlocksForDiff(
+    splitMarkdownIntoBlocks(normalizeMarkdownForDiff(text)),
+  )
+}
+
 /**
  * Выравнивает две версии по markdown-блокам; таблицы и абзацы не рвутся построчно.
  */
 export function buildAlignedDiffRows(leftText, rightText) {
-  const parts = diffArrays(splitMarkdownIntoBlocks(leftText), splitMarkdownIntoBlocks(rightText))
+  const parts = diffArrays(splitBlocksForDiff(leftText), splitBlocksForDiff(rightText))
   const rows = []
 
   for (let index = 0; index < parts.length; index += 1) {

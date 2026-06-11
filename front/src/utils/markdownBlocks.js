@@ -14,6 +14,28 @@ export function isTableSeparator(line) {
   return /^\|?(\s*:?-{3,}:?\s*\|)+\s*$/.test(trimmed)
 }
 
+export function isHorizontalRule(line) {
+  const trimmed = (line ?? '').trim()
+  return /^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)
+}
+
+/** Пустые декоративные блоки: HR, «** **» и т.п. — не участвуют в diff. */
+export function isIgnorableDividerBlock(text) {
+  const lines = splitContentLines(text).filter((line) => line.trim())
+  if (!lines.length) return true
+  if (lines.length > 1) return false
+
+  const line = lines[0].trim()
+  if (isHorizontalRule(line)) return true
+  if (/^\*{2,}(\s+\*{0,2})?$/.test(line)) return true
+
+  return false
+}
+
+export function normalizeBlocksForDiff(blocks) {
+  return blocks.filter((block) => !isIgnorableDividerBlock(block))
+}
+
 export function getLineKind(line) {
   const trimmed = (line ?? '').trim()
   const heading = trimmed.match(/^(#{1,6})\s/)
@@ -91,6 +113,11 @@ export function splitMarkdownIntoBlocks(text) {
 
   while (index < lines.length) {
     if (!lines[index].trim()) {
+      index += 1
+      continue
+    }
+
+    if (isHorizontalRule(lines[index])) {
       index += 1
       continue
     }

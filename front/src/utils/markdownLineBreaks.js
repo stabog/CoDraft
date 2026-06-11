@@ -11,6 +11,12 @@ export function normalizeHtmlLineBreaks(markdown) {
   return markdown.replace(HTML_BREAK_RE, '\n')
 }
 
+/** Нормализация перед diff: br-теги и лишние пустые строки. */
+export function normalizeMarkdownForDiff(markdown) {
+  if (!markdown) return ''
+  return normalizeHtmlLineBreaks(markdown).replace(/\n{3,}/g, '\n\n')
+}
+
 export function toEditorMarkdown(markdown) {
   if (!markdown) return ''
 
