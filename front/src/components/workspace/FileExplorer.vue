@@ -25,10 +25,7 @@ async function createDocument() {
   creating.value = true
   try {
     const title = newTitle.value.trim() || 'Без названия'
-    const document = await documentsStore.createDocument(userStore.actor, {
-      title,
-      content: '\n\n',
-    })
+    const document = await documentsStore.createDocument(userStore.actor, { title })
     newTitle.value = ''
     router.push({ name: 'editor', params: { id: document.id } })
   } finally {
@@ -68,7 +65,10 @@ function formatDate(value) {
         :to="{ name: 'editor', params: { id: document.id } }"
       >
         <span class="file-title">{{ document.title || 'Без названия' }}</span>
-        <span class="file-meta">v{{ document.headVersionNumber }} · {{ formatDate(document.updatedAt) }}</span>
+        <span class="file-meta">
+          {{ document.headVersionNumber ? `v${document.headVersionNumber}` : 'черновик' }} ·
+          {{ formatDate(document.updatedAt) }}
+        </span>
       </RouterLink>
       <p v-if="!documentsStore.documents.length" class="explorer-state">Пока нет документов</p>
     </nav>

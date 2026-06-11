@@ -1,11 +1,12 @@
 <script setup>
-import { mdiClose, mdiDockRight, mdiLockClock, mdiPencil } from '@mdi/js'
-import { computed, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
+import { mdiDockRight, mdiLockClock, mdiPencil } from '@mdi/js'
+import { computed, nextTick, onMounted, provide, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import VisualEditor from '../components/editor/VisualEditor.vue'
 import MdiIcon from '../components/icons/MdiIcon.vue'
 import ReviewPanel from '../components/review/ReviewPanel.vue'
 import ReviewPreview from '../components/review/ReviewPreview.vue'
+import VersionCompareWorkspace from '../components/history/VersionCompareWorkspace.vue'
 import VersionPanel from '../components/history/VersionPanel.vue'
 import { useEditorDocumentStatus } from '../composables/useEditorDocumentStatus'
 import { useSidebarState } from '../composables/useSidebarState'
@@ -40,8 +41,11 @@ const isActiveEditor = computed(() => documentsStore.isActiveEditor)
 const canTakeLock = computed(() => documentsStore.canTakeLock)
 const canEditActorDraft = computed(() => capabilities.value?.canEditActorDraft ?? false)
 const canFixVersion = computed(() => documentsStore.canFixVersion)
+const canCloseSession = computed(() => documentsStore.canCloseSession)
 const actorDraftMeta = computed(() => documentsStore.actorDraft)
 const activeEditor = computed(() => documentsStore.activeEditor)
+const turnActor = computed(() => documentsStore.turnActor)
+const passTurnOpen = ref(false)
 
 const isWritable = computed(() => {
   if (isRound.value) return isActiveEditor.value
@@ -53,13 +57,14 @@ const isWritable = computed(() => {
 
 const showReviewMode = computed(() => isOwnerHub.value)
 
+const canCompareVersions = computed(() => documentsStore.versions.length >= 2)
+
 const baseTitle = computed(() => headSnapshot.value?.title ?? headVersion.value?.title ?? '')
 const baseContent = computed(() => headSnapshot.value?.content ?? headVersion.value?.content ?? '')
 
-const hasChangesSinceVersion = computed(() => {
-  if (!headVersion.value) return Boolean(draft.title.trim() || draft.content.trim())
-  return hasWorkingChanges(baseTitle.value, baseContent.value, draft.title, draft.content)
-})
+const hasChangesSinceVersion = computed(() =>
+  hasWorkingChanges(baseTitle.value, baseContent.value, draft.title, draft.content),
+)
 
 const hasUnsubmittedChanges = computed(() => {
   if (!canEditActorDraft.value) return false
@@ -82,10 +87,23 @@ const { wordCount, charCount, statusText, readonlyHint, editModeTitle, editModeL
   hasChangesSinceVersion,
   hasUnsubmittedChanges,
   activeEditor,
+  turnActor,
   })
 
 const showReadonlyStrip = computed(
-  () => !isWritable.value && workspaceMode.value === 'edit' && Boolean(readonlyHint.value),
+  () =>
+    !isRound.value &&
+    !isWritable.value &&
+    workspaceMode.value === 'edit' &&
+    Boolean(readonlyHint.value),
+)
+
+const roundForeignEditor = computed(
+  () => isRound.value && activeEditor.value && !isActiveEditor.value,
+)
+
+const roundWaitingTurn = computed(
+  () => isRound.value && !isActiveEditor.value && !activeEditor.value && Boolean(turnActor.value),
 )
 
 const canEditTitle = computed(
@@ -99,14 +117,6 @@ const footerStatus = computed(() => ({
 }))
 
 provide('editorFooterStatus', footerStatus)
-
-async function releaseLockForDocument(documentId) {
-  try {
-    await documentsStore.releaseEditLock(documentId, userStore.actor, { discardChanges: true })
-  } catch {
-    // lock already released
-  }
-}
 
 function resetWorkspaceUi() {
   sourceOpen.value = false
@@ -129,25 +139,10 @@ watch(
   () => route.params.id,
   async (nextId, prevId) => {
     if (!prevId || nextId === prevId) return
-
-    const hadRoundLock =
-      ready.value && documentsStore.isRound && documentsStore.isActiveEditor
-
-    if (hadRoundLock) {
-      await releaseLockForDocument(prevId)
-    }
-
     resetWorkspaceUi()
     await openDocument(nextId)
   },
 )
-
-onBeforeUnmount(async () => {
-  clearTimeout(saveTimer.value)
-  if (!ready.value || !isRound.value || !isActiveEditor.value) return
-
-  await releaseLockForDocument(route.params.id)
-})
 
 watch(
   () => [draft.title, draft.content],
@@ -155,7 +150,7 @@ watch(
 )
 
 watch(workspaceMode, (mode) => {
-  if (mode === 'review') sourceOpen.value = false
+  if (mode === 'review' || mode === 'compare') sourceOpen.value = false
 })
 
 function syncDraftFromStore() {
@@ -211,39 +206,51 @@ async function startRoundEditing() {
   syncDraftFromStore()
 }
 
-async function releaseRoundLock() {
-  if (!hasChangesSinceVersion.value) {
-    await documentsStore.releaseEditLock(route.params.id, userStore.actor, { discardChanges: true })
-    syncDraftFromStore()
-    sourceOpen.value = false
-    return
-  }
-
-  const confirmed = window.confirm(
-    'Отменить правки? Несохранённые изменения будут потеряны, документ останется на текущей версии.',
-  )
-  if (!confirmed) return
-
-  await documentsStore.releaseEditLock(route.params.id, userStore.actor, { discardChanges: true })
-  syncDraftFromStore()
-  sourceOpen.value = false
+function startCompare() {
+  workspaceMode.value = 'compare'
 }
 
-async function fixVersion() {
-  if (!canFixVersion.value) return
+function closeCompare() {
+  workspaceMode.value = 'edit'
+}
 
+async function flushDraftSave() {
   clearTimeout(saveTimer.value)
-  if (isWritable.value) {
-    await documentsStore.updateDraft(route.params.id, userStore.actor, {
-      title: draft.title,
-      content: draft.content,
-    })
-  }
+  if (!isWritable.value) return
+  await documentsStore.updateDraft(route.params.id, userStore.actor, {
+    title: draft.title,
+    content: draft.content,
+  })
+  lastSavedTitle.value = draft.title
+  lastSavedContent.value = draft.content
+}
+
+async function publishVersion() {
+  if (!canFixVersion.value) return
+  await flushDraftSave()
   await documentsStore.fixVersion(route.params.id, userStore.actor, {})
   syncDraftFromStore()
   lastSavedTitle.value = draft.title
   lastSavedContent.value = draft.content
 }
+
+async function closeSession(passTo = null) {
+  if (!canCloseSession.value) return
+  clearTimeout(saveTimer.value)
+  if (hasChangesSinceVersion.value) {
+    await flushDraftSave()
+  }
+  await documentsStore.closeSession(route.params.id, userStore.actor, { passTo })
+  passTurnOpen.value = false
+  syncDraftFromStore()
+  lastSavedTitle.value = draft.title
+  lastSavedContent.value = draft.content
+  sourceOpen.value = false
+}
+
+const passTurnCandidates = computed(() =>
+  userStore.devUsers.filter((user) => user.id !== userStore.actor.id),
+)
 
 async function rebaseActorDraft() {
   const confirmed = window.confirm(
@@ -353,8 +360,115 @@ async function restoreVersion(versionId) {
                 </button>
               </div>
 
+              <template v-else-if="isRound">
+                <template v-if="workspaceMode === 'compare'">
+                  <button
+                    type="button"
+                    class="secondary compact"
+                    title="Вернуться к просмотру документа"
+                    @click="closeCompare"
+                  >
+                    Закрыть
+                  </button>
+                </template>
+
+                <template v-else-if="isActiveEditor">
+                  <template v-if="hasChangesSinceVersion">
+                    <button
+                      type="button"
+                      class="compact save-btn"
+                      :title="`Сохранить как v${(headVersion?.number ?? 0) + 1}`"
+                      @click="publishVersion"
+                    >
+                      Сохранить
+                    </button>
+
+                    <button
+                      type="button"
+                      class="secondary compact"
+                      title="Опубликовать правки и освободить сессию для всех"
+                      @click="closeSession(null)"
+                    >
+                      Сохранить и закрыть
+                    </button>
+
+                    <div v-if="passTurnCandidates.length" class="pass-turn">
+                      <button
+                        type="button"
+                        class="secondary compact"
+                        title="Опубликовать правки, закрыть сессию и назначить ход"
+                        @click="passTurnOpen = !passTurnOpen"
+                      >
+                        Сохранить и передать ход
+                      </button>
+                      <div v-if="passTurnOpen" class="pass-turn-menu">
+                        <button
+                          v-for="user in passTurnCandidates"
+                          :key="user.id"
+                          type="button"
+                          class="pass-turn-item"
+                          @click="closeSession(user)"
+                        >
+                          {{ user.name }}
+                        </button>
+                      </div>
+                    </div>
+                  </template>
+
+                  <button
+                    v-else
+                    type="button"
+                    class="secondary compact"
+                    title="Закончить редактирование и открыть документ для всех участников"
+                    @click="closeSession(null)"
+                  >
+                    Закрыть сессию
+                  </button>
+                </template>
+
+                <template v-else-if="canTakeLock">
+                  <button
+                    type="button"
+                    class="mode-btn"
+                    :title="editModeTitle"
+                    @click="startRoundEditing"
+                  >
+                    <MdiIcon :path="mdiPencil" :size="14" />
+                    <span>Редактировать</span>
+                  </button>
+
+                  <button
+                    v-if="canCompareVersions"
+                    type="button"
+                    class="secondary compact"
+                    title="Сравнить две версии документа"
+                    @click="startCompare"
+                  >
+                    Сравнить
+                  </button>
+                </template>
+
+                <span
+                  v-else-if="roundForeignEditor"
+                  class="round-status-hint"
+                  :title="`${activeEditor.name} редактирует документ`"
+                >
+                  <MdiIcon :path="mdiLockClock" :size="14" />
+                  <span>Только просмотр · {{ activeEditor.name }}</span>
+                </span>
+
+                <span
+                  v-else-if="roundWaitingTurn"
+                  class="round-status-hint"
+                  :title="`Сейчас ход ${turnActor.name}`"
+                >
+                  <MdiIcon :path="mdiLockClock" :size="14" />
+                  <span>Ход {{ turnActor.name }}</span>
+                </span>
+              </template>
+
               <button
-                v-if="canFixVersion"
+                v-else-if="canFixVersion"
                 type="button"
                 class="compact save-btn"
                 :class="{ secondary: !hasChangesSinceVersion }"
@@ -364,7 +478,7 @@ async function restoreVersion(versionId) {
                     ? `Сохранить как v${(headVersion?.number ?? 0) + 1}`
                     : 'Нет изменений для сохранения'
                 "
-                @click="fixVersion"
+                @click="publishVersion"
               >
                 Сохранить
               </button>
@@ -377,39 +491,6 @@ async function restoreVersion(versionId) {
                 @click="submitActorDraft"
               >
                 Отправить
-              </button>
-
-              <button
-                v-if="isRound && canTakeLock"
-                type="button"
-                class="mode-btn"
-                :title="editModeTitle"
-                @click="startRoundEditing"
-              >
-                <MdiIcon :path="mdiPencil" :size="14" />
-                <span>{{ editModeLabel }}</span>
-              </button>
-
-              <button
-                v-else-if="isRound && isActiveEditor"
-                type="button"
-                class="mode-btn mode-btn-cancel"
-                :title="editModeTitle"
-                @click="releaseRoundLock"
-              >
-                <MdiIcon :path="mdiClose" :size="14" />
-                <span>{{ editModeLabel }}</span>
-              </button>
-
-              <button
-                v-else-if="isRound && activeEditor"
-                type="button"
-                class="mode-btn muted"
-                :title="editModeTitle"
-                disabled
-              >
-                <MdiIcon :path="mdiLockClock" :size="14" />
-                <span>{{ editModeLabel }}</span>
               </button>
 
               <button
@@ -435,6 +516,10 @@ async function restoreVersion(versionId) {
               :head-content="headSnapshot?.content ?? ''"
               :head-version-number="headVersion?.number ?? 0"
               :submitted-drafts="documentsStore.submittedDrafts"
+            />
+            <VersionCompareWorkspace
+              v-else-if="workspaceMode === 'compare'"
+              :versions="documentsStore.versions"
             />
             <VisualEditor
               v-else
@@ -628,6 +713,48 @@ async function restoreVersion(versionId) {
 
 .save-btn:not(.secondary):not(:disabled) {
   font-weight: 600;
+}
+
+.round-status-hint {
+  align-items: center;
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 6px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
+
+.pass-turn {
+  position: relative;
+}
+
+.pass-turn-menu {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: grid;
+  min-width: 140px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 20;
+}
+
+.pass-turn-item {
+  background: transparent;
+  border: 0;
+  color: var(--text-normal);
+  font-size: 12px;
+  margin: 0;
+  min-height: 32px;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.pass-turn-item:hover {
+  background: var(--background-modifier-hover);
 }
 
 .icon-btn {

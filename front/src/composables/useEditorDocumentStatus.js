@@ -21,24 +21,28 @@ export function useEditorDocumentStatus({
   hasChangesSinceVersion,
   hasUnsubmittedChanges,
   activeEditor,
+  turnActor,
 }) {
   const wordCount = computed(() => countWords(`${draft.title} ${draft.content}`))
   const charCount = computed(() => (draft.title + draft.content).length)
 
   const statusText = computed(() => {
     const v = headVersion.value?.number ?? 0
+    const versionLabel = v > 0 ? `v${v}` : 'черновик'
+    const nextVersionLabel = v > 0 ? `v${v + 1}` : 'v1'
 
     if (documentsStore.saving) return 'Сохранение…'
 
     if (isRound.value) {
       if (isActiveEditor.value) {
         if (hasChangesSinceVersion.value) {
-          return `v${v} · редактируете · можно сохранить v${v + 1}`
+          return `${versionLabel} · редактируете · можно сохранить ${nextVersionLabel}`
         }
-        return `v${v} · редактируете`
+        return `${versionLabel} · редактируете`
       }
-      if (activeEditor.value) return `v${v} · правит ${activeEditor.value.name}`
-      return `v${v} · можно редактировать`
+      if (activeEditor.value) return `${versionLabel} · правит ${activeEditor.value.name}`
+      if (turnActor?.value) return `${versionLabel} · ход ${turnActor.value.name}`
+      return `${versionLabel} · можно редактировать`
     }
 
     if (canEditActorDraft.value) {
@@ -52,20 +56,21 @@ export function useEditorDocumentStatus({
     }
 
     if (isOwnerHub.value && capabilities.value?.canEditDraft) {
-      return hasChangesSinceVersion.value ? `v${v} · канон · есть изменения` : `v${v} · канон`
+      if (v === 0) {
+        return hasChangesSinceVersion.value
+          ? `${versionLabel} · можно зафиксировать ${nextVersionLabel}`
+          : versionLabel
+      }
+      return hasChangesSinceVersion.value ? `${versionLabel} · канон · есть изменения` : `${versionLabel} · канон`
     }
 
-    if (!isWritable.value) return `v${v} · просмотр`
-    return `v${v} · черновик`
+    if (!isWritable.value) return `${versionLabel} · просмотр`
+    return versionLabel
   })
 
   const readonlyHint = computed(() => {
-    if (isWritable.value) return ''
+    if (isWritable.value || isRound.value) return ''
 
-    if (isRound.value && canTakeLock.value) return ''
-    if (isRound.value && activeEditor.value) {
-      return `${activeEditor.value.name} редактирует. Вы можете комментировать выделенный фрагмент.`
-    }
     if (isOwnerHub.value) {
       return 'Только просмотр. Выделите текст, чтобы оставить комментарий к версии.'
     }
@@ -73,20 +78,13 @@ export function useEditorDocumentStatus({
   })
 
   const editModeTitle = computed(() => {
-    if (isRound.value && canTakeLock.value) return 'Начать редактирование'
-    if (isRound.value && isActiveEditor.value) {
-      return 'Отменить правки и вернуться к опубликованной версии'
+    if (isRound.value && canTakeLock.value) {
+      return turnActor?.value ? 'Ваш ход — начать редактирование' : 'Начать редактирование'
     }
-    if (isRound.value && activeEditor.value) return `Правит ${activeEditor.value.name}`
-    return 'Режим просмотра'
+    return 'Начать редактирование'
   })
 
-  const editModeLabel = computed(() => {
-    if (isRound.value && canTakeLock.value) return 'Редактировать'
-    if (isRound.value && isActiveEditor.value) return 'Отменить'
-    if (isRound.value && activeEditor.value) return 'Только просмотр'
-    return 'Редактировать'
-  })
+  const editModeLabel = computed(() => 'Редактировать')
 
   return {
     wordCount,

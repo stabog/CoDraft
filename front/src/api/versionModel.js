@@ -68,6 +68,14 @@ export function getPersonalDraft(state, documentId, userId) {
   )
 }
 
+/** Черновик до первой published-версии (`parentVersionId === null`). */
+export function getBootstrapDraft(state, documentId) {
+  return state.versions.find(
+    (item) =>
+      item.documentId === documentId && isDraft(item) && item.parentVersionId == null,
+  )
+}
+
 export function listPersonalDrafts(state, documentId, { parentVersionId } = {}) {
   return state.versions.filter((item) => {
     if (item.documentId !== documentId) return false
@@ -160,10 +168,29 @@ export function markDraftsStale(state, documentId, oldCanonicalId) {
   }
 }
 
-export function draftDiffersFromHead(state, document, draft) {
+export function getContentBaseline(state, document) {
   const head = getCanonicalVersion(state, document)
-  if (!head || !draft) return false
-  return draft.title !== head.title || draft.content !== head.content
+  if (head) {
+    return { title: head.title, content: head.content, versionId: head.id }
+  }
+
+  const bootstrap = getBootstrapDraft(state, document.id)
+  if (bootstrap) {
+    return { title: bootstrap.title, content: bootstrap.content, versionId: null }
+  }
+
+  return {
+    title: document.title,
+    content: `# ${document.title}\n\n`,
+    versionId: null,
+  }
+}
+
+export function draftDiffersFromHead(state, document, draft) {
+  if (!draft) return false
+
+  const baseline = getContentBaseline(state, document)
+  return draft.title !== baseline.title || draft.content !== baseline.content
 }
 
 export function promoteDraft(draft, { versionNumber, summary }) {

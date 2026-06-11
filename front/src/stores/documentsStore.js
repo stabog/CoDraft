@@ -24,8 +24,13 @@ export const useDocumentsStore = defineStore('documents', {
     asyncWorkflow: (state) => state.currentDocument?.asyncWorkflow ?? 'round',
     isRound: (state) => state.currentDocument?.asyncWorkflow === 'round',
     isOwnerHub: (state) => state.currentDocument?.asyncWorkflow === 'owner_hub',
-    activeEditor: (state) => state.currentDocument?.activeEditorId ?? null,
+    activeEditor: (state) =>
+      state.currentDocument?.sessionHolderId ??
+      state.currentDocument?.activeEditorId ??
+      null,
+    turnActor: (state) => state.currentDocument?.turnActorId ?? null,
     canFixVersion: (state) => state.currentDocument?.capabilities?.canFixVersion ?? false,
+    canCloseSession: (state) => state.currentDocument?.capabilities?.canCloseSession ?? false,
   },
 
   actions: {
@@ -85,6 +90,17 @@ export const useDocumentsStore = defineStore('documents', {
 
     async releaseEditLock(documentId, actor, payload = {}) {
       this.currentDocument = await documentsApi.releaseEditLock(documentId, actor, payload)
+    },
+
+    async closeSession(documentId, actor, payload = {}) {
+      await documentsApi.closeSession(documentId, actor, payload)
+      const bundle = await documentsApi.getEditorBundle(documentId, actor)
+      this.currentDocument = bundle.document
+      this.versions = bundle.versions
+      this.submittedDrafts = bundle.submittedDrafts ?? []
+      this.comments = bundle.comments
+      this.headSnapshot = bundle.head ?? null
+      this.actorDraft = bundle.actorDraft ?? null
     },
 
     async updateActorDraft(documentId, actor, payload) {

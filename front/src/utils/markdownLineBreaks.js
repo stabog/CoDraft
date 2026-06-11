@@ -4,10 +4,19 @@
  * превращаем в hard break (два пробела перед \n).
  */
 
+const HTML_BREAK_RE = /<br\s*\/?>/gi
+
+export function normalizeHtmlLineBreaks(markdown) {
+  if (!markdown) return ''
+  return markdown.replace(HTML_BREAK_RE, '\n')
+}
+
 export function toEditorMarkdown(markdown) {
   if (!markdown) return ''
 
-  return markdown
+  const normalized = normalizeHtmlLineBreaks(markdown)
+
+  return normalized
     .split(/\n{2,}/)
     .map((block) => block.replace(/\n/g, '  \n'))
     .join('\n\n')
@@ -16,5 +25,12 @@ export function toEditorMarkdown(markdown) {
 export function fromEditorMarkdown(markdown) {
   if (!markdown) return ''
 
-  return markdown.replace(/ {2}\n/g, '\n').replace(/\\\n/g, '\n')
+  return normalizeHtmlLineBreaks(markdown)
+    .replace(/ {2}\n/g, '\n')
+    .replace(/\\\n/g, '\n')
+}
+
+/** Markdown для preview/diff: как в Milkdown, с рабочими переносами строк. */
+export function prepareMarkdownForRender(markdown) {
+  return toEditorMarkdown(markdown)
 }
