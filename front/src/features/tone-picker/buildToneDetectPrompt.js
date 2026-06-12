@@ -4,6 +4,7 @@
  */
 export function buildToneDetectPrompt(focusText) {
   return `Classify the tone of the focus fragment below.
+Use the same language as the fragment in your analysis; do not translate it.
 
 Return ONLY a JSON object with exactly three integer keys (each 0–10):
 - "formal" (0 = Informal, 10 = Formal)

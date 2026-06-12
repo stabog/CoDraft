@@ -1,5 +1,12 @@
 import { resolveLineContext } from './resolveLineContext.js'
 
+function createAnchorSessionId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `anchor-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 /**
  * @param {string} content
  * @param {number} selectionFrom
@@ -14,13 +21,17 @@ import { resolveLineContext } from './resolveLineContext.js'
  *   focusText?: string,
  *   lineStart?: number,
  *   lineEnd?: number,
+ *   beforeText?: string,
+ *   afterText?: string,
  *   pmFrom?: number,
  *   pmTo?: number,
  *   revision?: number,
+ *   anchorSessionId?: string,
  * }} [options]
  * @returns {Record<string, unknown> | null}
  */
 export function buildEditorSelection(content, selectionFrom, selectionTo, source, options = {}) {
+  const anchorSessionId = options.anchorSessionId ?? createAnchorSessionId()
   const anchorFrom = Math.min(selectionFrom, selectionTo)
   const anchorTo = Math.max(selectionFrom, selectionTo)
   const markdownSlice = content.slice(anchorFrom, anchorTo)
@@ -48,9 +59,12 @@ export function buildEditorSelection(content, selectionFrom, selectionTo, source
       focusText: options.focusText,
       lineStart: options.lineStart,
       lineEnd: options.lineEnd,
+      beforeText: options.beforeText ?? '',
+      afterText: options.afterText ?? '',
       pmFrom: options.pmFrom,
       pmTo: options.pmTo,
       revision: options.revision ?? 0,
+      anchorSessionId,
     }
   }
 
@@ -75,5 +89,6 @@ export function buildEditorSelection(content, selectionFrom, selectionTo, source
     pmFrom: options.pmFrom,
     pmTo: options.pmTo,
     revision: options.revision ?? 0,
+    anchorSessionId,
   }
 }

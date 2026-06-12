@@ -25,7 +25,7 @@ import {
   getCanonicalContentFromEditor,
   mapPmSelectionToCanonical,
 } from '../../utils/mapPmSelectionToCanonical.js'
-import { resolvePmRangeFromCanonical } from '../../utils/resolvePmRangeFromCanonical.js'
+import { resolvePmHighlightRange } from '../../utils/resolvePmRangeFromCanonical.js'
 import { anchorDebug, anchorDebugWarn } from '../../utils/anchorDebug.js'
 import { fromEditorMarkdown, toEditorMarkdown } from '../../utils/markdownLineBreaks'
 import { analyzeGfmTableMarkdown } from '../../utils/normalizeGfmTableCells.js'
@@ -180,7 +180,7 @@ function shouldCommitAnchor(altKey, shiftKey = false) {
 function resolveCommittedAnchorPmRange(ctx) {
   const anchor = props.committedAnchor
   if (!anchor || anchor.anchorFrom == null || anchor.anchorTo == null) return null
-  return resolvePmRangeFromCanonical(ctx, anchor.anchorFrom, anchor.anchorTo)
+  return resolvePmHighlightRange(ctx, anchor)
 }
 
 function clearAnchor(reason = 'unknown') {
@@ -227,6 +227,8 @@ function commitVisualAnchor(ctx, pmSelection) {
       contextFrom: mapped.contextFrom,
       contextTo: mapped.contextTo,
       contextText: mapped.contextText,
+      beforeText: mapped.beforeText,
+      afterText: mapped.afterText,
       focusText: mapped.focusText,
       lineStart: mapped.lineStart,
       lineEnd: mapped.lineEnd,
@@ -265,7 +267,7 @@ function isInsideCommittedAnchorPm(ctx, pmPos) {
 
   if (anchor.anchorFrom == null || anchor.anchorTo == null) return false
 
-  const resolved = resolvePmRangeFromCanonical(ctx, anchor.anchorFrom, anchor.anchorTo)
+  const resolved = resolvePmHighlightRange(ctx, anchor)
   if (!resolved) return false
 
   return pmPos >= resolved.pmFrom && pmPos < resolved.pmTo
@@ -406,7 +408,7 @@ function syncPmHighlightFromAnchor() {
     if (!anchor || anchor.source !== 'visual' || anchor.anchorFrom == null || anchor.anchorTo == null) {
       pmHighlightRange.value = null
     } else {
-      pmHighlightRange.value = resolvePmRangeFromCanonical(ctx, anchor.anchorFrom, anchor.anchorTo)
+      pmHighlightRange.value = resolvePmHighlightRange(ctx, anchor)
     }
 
     suppressSelectionHandling()

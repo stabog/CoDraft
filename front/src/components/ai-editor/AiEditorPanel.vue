@@ -44,24 +44,39 @@ const hasToneChanges = computed(() =>
   toneAxes.value.some((axis, index) => axis.value !== initialToneAxes.value[index]?.value),
 )
 
+function resetTonePickerState() {
+  toneAxes.value = cloneDefaultToneAxes()
+  initialToneAxes.value = cloneDefaultToneAxes()
+  toneBaselineDetected.value = false
+  errorMessage.value = ''
+}
+
 watch(
-  () => props.selectedRange,
-  () => {
-    toneAxes.value = cloneDefaultToneAxes()
-    initialToneAxes.value = cloneDefaultToneAxes()
-    toneBaselineDetected.value = false
-    errorMessage.value = ''
+  () => props.selectedRange?.anchorSessionId ?? null,
+  (sessionId, previousSessionId) => {
+    if (!props.selectedRange) {
+      resetTonePickerState()
+      return
+    }
+    if (sessionId === previousSessionId) return
+    resetTonePickerState()
   },
 )
 
+function toneChangeInput() {
+  if (!props.selectedRange?.contextText) return null
+  return {
+    before: props.selectedRange.beforeText ?? '',
+    context: props.selectedRange.contextText,
+    fragment: props.selectedRange.focusText ?? props.selectedRange.anchorText ?? '',
+    after: props.selectedRange.afterText ?? '',
+  }
+}
+
 function currentPrompt() {
-  if (!props.selectedRange?.contextText) return { prompt: null, isDifferent: false }
-  return buildToneChangePrompt(
-    props.selectedRange.contextText,
-    props.selectedRange.focusText,
-    toneAxes.value,
-    initialToneAxes.value,
-  )
+  const input = toneChangeInput()
+  if (!input) return { prompt: null, isDifferent: false }
+  return buildToneChangePrompt(input, toneAxes.value, initialToneAxes.value)
 }
 
 function updateToneFromPointer(clientX, clientY) {
@@ -103,14 +118,17 @@ function onAxisInput(index, value) {
 }
 
 function openPromptPreview() {
-  const { prompt } = currentPrompt()
-  if (!props.selectedRange?.contextText) {
+  const input = toneChangeInput()
+  if (!input) {
     promptPreviewText.value = '(Контекст не выбран.)'
-  } else if (!prompt) {
-    promptPreviewText.value =
-      `Context (markdown):\n${props.selectedRange.contextText}\n\nFocus fragment:\n${props.selectedRange.focusText}\n\n(Оси тона не изменены — инструкции для переписывания не сформированы.)`
   } else {
-    promptPreviewText.value = prompt
+    const { prompt } = buildToneChangePrompt(
+      input,
+      toneAxes.value,
+      initialToneAxes.value,
+      { preview: true },
+    )
+    promptPreviewText.value = prompt ?? '(Не удалось собрать промпт.)'
   }
   promptPreviewOpen.value = true
 }
