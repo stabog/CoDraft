@@ -15,6 +15,8 @@ import {
   mdiFormatParagraph,
   mdiFormatQuoteClose,
   mdiLanguageMarkdown,
+  mdiMarker,
+  mdiMarkerCancel,
   mdiMinus,
   mdiRedo,
   mdiUndo,
@@ -51,9 +53,21 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  showAnchorTools: {
+    type: Boolean,
+    default: false,
+  },
+  brushActive: {
+    type: Boolean,
+    default: false,
+  },
+  hasAnchor: {
+    type: Boolean,
+    default: false,
+  },
 })
 
-defineEmits(['toggle-source'])
+defineEmits(['toggle-source', 'toggle-brush', 'clear-anchor'])
 
 const copyDone = ref(false)
 let copyTimer = null
@@ -145,7 +159,32 @@ async function copyDocument() {
       </div>
     </template>
 
-    <span v-else-if="sourceOpen" class="toolbar-source-label">Исходник Markdown</span>
+    <template v-if="showAnchorTools">
+      <span v-if="showFormatting" class="toolbar-sep" aria-hidden="true" />
+
+      <div class="toolbar-group">
+        <button
+          type="button"
+          class="toolbar-btn toolbar-btn-brush"
+          :class="{ active: brushActive }"
+          title="Якорь: выделение для комментария или ИИ (или Alt+выделение)"
+          @mousedown.prevent
+          @click="$emit('toggle-brush')"
+        >
+          <MdiIcon :path="mdiMarker" />
+        </button>
+        <button
+          v-if="hasAnchor"
+          type="button"
+          class="toolbar-btn toolbar-btn-clear-anchor"
+          title="Снять якорь"
+          @mousedown.prevent
+          @click="$emit('clear-anchor')"
+        >
+          <MdiIcon :path="mdiMarkerCancel" />
+        </button>
+      </div>
+    </template>
 
     <span class="toolbar-spacer" aria-hidden="true" />
 
@@ -208,12 +247,6 @@ async function copyDocument() {
   min-width: 8px;
 }
 
-.toolbar-source-label {
-  color: var(--text-faint);
-  font-size: 12px;
-  padding: 0 4px;
-}
-
 .toolbar-btn {
   align-items: center;
   background: transparent;
@@ -239,8 +272,13 @@ async function copyDocument() {
   color: var(--text-faint);
 }
 
-.toolbar-btn-source.active {
+.toolbar-btn-source.active,
+.toolbar-btn-brush.active {
   background: var(--background-modifier-active);
-  color: var(--text-normal);
+  color: var(--interactive-accent);
+}
+
+.toolbar-btn-clear-anchor {
+  color: var(--interactive-accent);
 }
 </style>

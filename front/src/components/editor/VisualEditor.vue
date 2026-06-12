@@ -1,5 +1,7 @@
 <script setup>
-import { Editor, defaultValueCtx, editorViewCtx, parserCtx, rootCtx } from '@milkdown/core'
+import { Editor, defaultValueCtx, editorViewCtx, parserCtx, prosePluginsCtx, rootCtx } from '@milkdown/core'
+import { Plugin } from '@milkdown/prose/state'
+import { TextSelection } from '@milkdown/prose/state'
 import { clipboard } from '@milkdown/plugin-clipboard'
 import { history } from '@milkdown/plugin-history'
 import { listener, listenerCtx } from '@milkdown/plugin-listener'
@@ -7,12 +9,25 @@ import { commonmark } from '@milkdown/preset-commonmark'
 import { gfm } from '@milkdown/preset-gfm'
 import { nord } from '@milkdown/theme-nord'
 import { getMarkdown } from '@milkdown/utils'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  anchorHighlightKey,
+  createAnchorHighlightPlugin,
+  refreshAnchorHighlight,
+} from '../../utils/anchorHighlightPlugin.js'
+import { isCanonicalPosInsideAnchor } from '../../utils/editorAnchor.js'
+import { buildEditorSelection } from '../../utils/editorSelection.js'
+import {
+  getCanonicalContentFromEditor,
+  mapPmSelectionToCanonical,
+} from '../../utils/mapPmSelectionToCanonical.js'
+import { resolvePmRangeFromCanonical } from '../../utils/resolvePmRangeFromCanonical.js'
 import { fromEditorMarkdown, toEditorMarkdown } from '../../utils/markdownLineBreaks'
 import EditorToolbar from './EditorToolbar.vue'
 
 const model = defineModel({ type: String, default: '' })
 const sourceOpen = defineModel('sourceOpen', { type: Boolean, default: false })
+const brushActive = defineModel('brushActive', { type: Boolean, default: false })
 
 const props = defineProps({
   readonly: {
@@ -23,6 +38,14 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  committedAnchor: {
+    type: Object,
+    default: null,
+  },
+  showAnchorTools: {
+    type: Boolean,
+    default: false,
+  },
 })
 
 const emit = defineEmits(['selection-change'])
@@ -32,6 +55,7 @@ const sourceInput = ref(null)
 const editor = ref(null)
 const applyingExternalChange = ref(false)
 const lastEditorMarkdown = ref('')
+const pmHighlightRange = ref(null)
 
 const showFormatting = computed(() => !props.readonly && !sourceOpen.value)
 
@@ -82,6 +106,7 @@ function applyMarkdown(markdown) {
     lastEditorMarkdown.value = editorMarkdown
     queueMicrotask(() => {
       applyingExternalChange.value = false
+      syncPmHighlightFromAnchor()
     })
   })
 }
@@ -92,7 +117,6 @@ function openSource() {
     model.value = markdown
   }
   sourceOpen.value = true
-  emit('selection-change', null)
 }
 
 function toggleSource() {
@@ -103,32 +127,226 @@ function toggleSource() {
   openSource()
 }
 
-function updateSourceSelection() {
-  const element = sourceInput.value
-  if (!element) return
+function shouldCommitAnchor(altKey) {
+  if (!props.showAnchorTools) return false
+  return brushActive.value || altKey
+}
 
-  const anchorFrom = element.selectionStart
-  const anchorTo = element.selectionEnd
-  const anchorText = model.value.slice(anchorFrom, anchorTo)
+function clearAnchor() {
+  pmHighlightRange.value = null
+  emit('selection-change', null)
+  if (editor.value && !sourceOpen.value) {
+    editor.value.action((ctx) => {
+      refreshAnchorHighlight(ctx.get(editorViewCtx))
+    })
+  }
+}
 
-  if (!anchorText.trim()) {
-    emit('selection-change', null)
+function commitVisualAnchor(ctx, pmSelection) {
+  if (pmSelection.from === pmSelection.to) return
+
+  const canonicalContent = getCanonicalContentFromEditor(ctx)
+  const mapped = mapPmSelectionToCanonical(ctx, pmSelection, canonicalContent)
+  if (!mapped) {
+    clearAnchor()
     return
   }
 
-  emit('selection-change', {
-    anchorFrom,
-    anchorTo,
-    anchorText,
-    text: anchorText,
+  const editorSelection = buildEditorSelection(
+    canonicalContent,
+    mapped.anchorFrom,
+    mapped.anchorTo,
+    'visual',
+    {
+      displayText: mapped.plainText,
+      focusMarkdown: mapped.focusMarkdown,
+      contextFrom: mapped.contextFrom,
+      contextTo: mapped.contextTo,
+      contextText: mapped.contextText,
+      focusText: mapped.focusText,
+      lineStart: mapped.lineStart,
+      lineEnd: mapped.lineEnd,
+      pmFrom: pmSelection.from,
+      pmTo: pmSelection.to,
+    },
+  )
+  if (!editorSelection) {
+    clearAnchor()
+    return
+  }
+
+  pmHighlightRange.value = { pmFrom: pmSelection.from, pmTo: pmSelection.to }
+  emit('selection-change', editorSelection)
+
+  const view = ctx.get(editorViewCtx)
+  const collapsePos = Math.min(pmSelection.to, view.state.doc.content.size)
+  const tr = view.state.tr
+    .setSelection(TextSelection.create(view.state.doc, collapsePos))
+    .setMeta(anchorHighlightKey, { refresh: true })
+  view.dispatch(tr)
+}
+
+function isInsideCommittedAnchorPm(ctx, pmPos) {
+  const anchor = props.committedAnchor
+  if (!anchor) return false
+
+  if (anchor.anchorFrom == null || anchor.anchorTo == null) return false
+
+  const resolved = resolvePmRangeFromCanonical(ctx, anchor.anchorFrom, anchor.anchorTo)
+  if (!resolved) return false
+
+  return pmPos >= resolved.pmFrom && pmPos < resolved.pmTo
+}
+
+function handleVisualSelectionSettled(view, ctx, altKey) {
+  const { selection } = view.state
+  const commitIntent = shouldCommitAnchor(altKey)
+
+  if (!selection.empty) {
+    if (commitIntent) {
+      commitVisualAnchor(ctx, selection)
+    }
+    return
+  }
+
+  if (!props.committedAnchor || !brushActive.value) return
+
+  if (!isInsideCommittedAnchorPm(ctx, selection.from)) {
+    clearAnchor()
+  }
+}
+
+let sourcePointerAltKey = false
+
+function onSourcePointerDown(event) {
+  sourcePointerAltKey = event.altKey
+}
+
+function resizeSourceInput() {
+  const element = sourceInput.value
+  if (!element || !sourceOpen.value) return
+
+  element.style.height = '0'
+  const minHeight = element.parentElement?.clientHeight ?? 200
+  element.style.height = `${Math.max(element.scrollHeight, minHeight)}px`
+}
+
+function handleSourcePointer(event) {
+  const element = sourceInput.value
+  if (!element) return
+
+  const altKey = sourcePointerAltKey || event.altKey
+  const start = element.selectionStart
+  const end = element.selectionEnd
+  const commitIntent = shouldCommitAnchor(altKey)
+
+  if (start !== end) {
+    if (!commitIntent) return
+
+    const selection = buildEditorSelection(model.value, start, end, 'source')
+    if (!selection) {
+      clearAnchor()
+      return
+    }
+    emit('selection-change', selection)
+    nextTick(() => {
+      element.setSelectionRange(end, end)
+    })
+    return
+  }
+
+  if (!props.committedAnchor || !brushActive.value) return
+
+  if (!isCanonicalPosInsideAnchor(start, props.committedAnchor)) {
+    clearAnchor()
+  }
+}
+
+function syncPmHighlightFromAnchor() {
+  if (!editor.value || sourceOpen.value) return
+
+  editor.value.action((ctx) => {
+    const anchor = props.committedAnchor
+    if (!anchor || anchor.source !== 'visual' || anchor.anchorFrom == null || anchor.anchorTo == null) {
+      pmHighlightRange.value = null
+    } else {
+      pmHighlightRange.value = resolvePmRangeFromCanonical(ctx, anchor.anchorFrom, anchor.anchorTo)
+    }
+
+    refreshAnchorHighlight(ctx.get(editorViewCtx))
   })
 }
 
+function attachEditorPlugins(ctx) {
+  let pointerSelecting = false
+  let selectionAltKey = false
+
+  const anchorPlugin = createAnchorHighlightPlugin(
+    () => pmHighlightRange.value,
+    () => queueMicrotask(() => syncPmHighlightFromAnchor()),
+  )
+
+  const selectionPlugin = new Plugin({
+    props: {
+      handleDOMEvents: {
+        mousedown: (_view, event) => {
+          pointerSelecting = true
+          selectionAltKey = event.altKey
+          return false
+        },
+        mouseup: (view, event) => {
+          pointerSelecting = false
+          const altKey = selectionAltKey || event.altKey
+          requestAnimationFrame(() => {
+            handleVisualSelectionSettled(view, ctx, altKey)
+          })
+          return false
+        },
+        keyup: (view, event) => {
+          if (pointerSelecting) return false
+          handleVisualSelectionSettled(view, ctx, event.altKey)
+          return false
+        },
+      },
+    },
+  })
+
+  ctx.update(prosePluginsCtx, (plugins) => plugins.concat(anchorPlugin, selectionPlugin))
+}
+
+function onEscapeKey(event) {
+  if (event.key !== 'Escape') return
+  if (props.committedAnchor) {
+    event.preventDefault()
+    clearAnchor()
+  }
+}
+
+function setSourceCursor(position) {
+  const element = sourceInput.value
+  if (!element || !sourceOpen.value) return
+
+  const cursor = Math.max(0, Math.min(position, model.value.length))
+  nextTick(() => {
+    element.focus()
+    element.setSelectionRange(cursor, cursor)
+  })
+}
+
+defineExpose({
+  setSourceCursor,
+  refreshAnchorDecoration: syncPmHighlightFromAnchor,
+})
+
 onMounted(async () => {
+  window.addEventListener('keydown', onEscapeKey)
+
   editor.value = await Editor.make()
     .config((ctx) => {
       ctx.set(rootCtx, root.value)
       ctx.set(defaultValueCtx, toEditorMarkdown(model.value || ''))
+      attachEditorPlugins(ctx)
+
       ctx
         .get(listenerCtx)
         .markdownUpdated((_, markdown) => {
@@ -138,26 +356,6 @@ onMounted(async () => {
           if (normalized !== model.value) {
             model.value = normalized
           }
-        })
-        .selectionUpdated((_, selection) => {
-          if (sourceOpen.value) return
-
-          const slice = selection.content().content
-          const selectedText = slice.textBetween(0, slice.size, '\n')
-          const anchorText = selectedText.trim()
-
-          if (!anchorText) {
-            emit('selection-change', null)
-            return
-          }
-
-          const anchorFrom = model.value.indexOf(anchorText)
-          emit('selection-change', {
-            anchorFrom: anchorFrom >= 0 ? anchorFrom : 0,
-            anchorTo: anchorFrom >= 0 ? anchorFrom + anchorText.length : anchorText.length,
-            anchorText,
-            text: anchorText,
-          })
         })
     })
     .use(nord)
@@ -171,18 +369,32 @@ onMounted(async () => {
   applyMarkdown(model.value)
   lastEditorMarkdown.value = readEditorMarkdown() || toEditorMarkdown(model.value || '')
   setEditable(!props.readonly)
+  syncPmHighlightFromAnchor()
 })
 
 onBeforeUnmount(async () => {
+  window.removeEventListener('keydown', onEscapeKey)
   if (editor.value) {
     await editor.value.destroy()
   }
 })
 
 watch(
+  () => props.committedAnchor,
+  () => {
+    syncPmHighlightFromAnchor()
+  },
+  { deep: true },
+)
+
+watch(
   () => model.value,
   (markdown) => {
-    if (!editor.value || applyingExternalChange.value || sourceOpen.value) return
+    if (sourceOpen.value) {
+      nextTick(() => resizeSourceInput())
+      return
+    }
+    if (!editor.value || applyingExternalChange.value) return
     if (shouldSkipExternalSync(markdown)) return
     applyMarkdown(markdown)
   },
@@ -201,12 +413,13 @@ watch(sourceOpen, (open, wasOpen) => {
     if (markdown !== model.value) {
       model.value = markdown
     }
-    emit('selection-change', null)
+    nextTick(() => resizeSourceInput())
     return
   }
 
   applyMarkdown(model.value)
   lastEditorMarkdown.value = toEditorMarkdown(model.value)
+  nextTick(() => syncPmHighlightFromAnchor())
 })
 
 function setEditable(editable) {
@@ -224,21 +437,29 @@ function setEditable(editable) {
       :editor="editor"
       :source-open="sourceOpen"
       :show-formatting="showFormatting"
+      :show-anchor-tools="showAnchorTools"
+      :brush-active="brushActive"
+      :has-anchor="Boolean(committedAnchor)"
       :copy-text="copyText"
       @toggle-source="toggleSource"
+      @toggle-brush="brushActive = !brushActive"
+      @clear-anchor="clearAnchor"
     />
 
     <div v-if="sourceOpen" class="editor-content-scroll">
-      <textarea
-        ref="sourceInput"
-        v-model="model"
-        class="source-input"
-        spellcheck="false"
-        :readonly="readonly"
-        @mouseup="updateSourceSelection"
-        @keyup="updateSourceSelection"
-        @select="updateSourceSelection"
-      />
+      <div class="source-editor">
+        <textarea
+          ref="sourceInput"
+          v-model="model"
+          class="source-input"
+          spellcheck="false"
+          :readonly="readonly"
+          @mousedown="onSourcePointerDown"
+          @mouseup="handleSourcePointer"
+          @keyup="handleSourcePointer"
+          @input="resizeSourceInput"
+        />
+      </div>
     </div>
 
     <div v-show="!sourceOpen" class="editor-content-scroll">
@@ -266,11 +487,12 @@ function setEditable(editable) {
   padding: 8px 32px 32px;
 }
 
-.source-input,
+.source-editor,
 .milkdown-editor {
   display: block;
   margin: 0 auto;
   max-width: 720px;
+  min-height: 100%;
   width: 100%;
 }
 
@@ -278,13 +500,16 @@ function setEditable(editable) {
   background: transparent;
   border: 0;
   color: var(--text-normal);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  display: block;
+  font-family: inherit;
   font-size: 16px;
   line-height: 1.72;
-  min-height: 100%;
+  min-height: 200px;
   outline: none;
+  overflow: hidden;
   padding: 0;
   resize: none;
+  width: 100%;
 }
 
 .source-input:read-only {
@@ -306,6 +531,11 @@ function setEditable(editable) {
   line-height: 1.72;
   min-height: 200px;
   outline: none;
+}
+
+.milkdown-editor :deep(.codraft-committed-anchor) {
+  background: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+  border-radius: 2px;
 }
 
 .milkdown-editor :deep(.ProseMirror h1) {

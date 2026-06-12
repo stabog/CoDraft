@@ -67,7 +67,9 @@ function resolutionLabel(comment) {
       <button type="submit" :disabled="!commentBody.trim()">Добавить комментарий</button>
     </form>
 
-    <div v-else-if="canComment" class="hint">Выделите текст, чтобы оставить комментарий.</div>
+    <div v-else-if="canComment" class="hint">
+      Выделите фрагмент: включите кисть в тулбаре или удерживайте Alt при выделении.
+    </div>
 
     <div v-if="isOwner && submittedDrafts.length" class="hint owner-hint">
       Отправленные черновики — перенесите нужное в свой редактор вручную.

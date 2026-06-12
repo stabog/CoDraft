@@ -7,7 +7,13 @@ const props = defineProps({
   headContent: { type: String, default: '' },
   headVersionNumber: { type: Number, default: 0 },
   submittedDrafts: { type: Array, default: () => [] },
+  committedAnchor: { type: Object, default: null },
+  showAnchorTools: { type: Boolean, default: false },
 })
+
+const brushActive = defineModel('brushActive', { type: Boolean, default: false })
+
+defineEmits(['selection-change'])
 
 const sortedDrafts = computed(() =>
   [...props.submittedDrafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
@@ -39,7 +45,14 @@ const sortedDrafts = computed(() =>
 
     <div class="head-preview">
       <h3 class="head-label">Канон v{{ headVersionNumber }}</h3>
-      <VisualEditor :model-value="headContent" readonly />
+      <VisualEditor
+        :model-value="headContent"
+        readonly
+        :committed-anchor="committedAnchor"
+        :show-anchor-tools="showAnchorTools"
+        v-model:brush-active="brushActive"
+        @selection-change="$emit('selection-change', $event)"
+      />
     </div>
   </section>
 </template>

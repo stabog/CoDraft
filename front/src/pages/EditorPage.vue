@@ -4,6 +4,7 @@ import { computed, nextTick, onMounted, provide, reactive, ref, watch } from 'vu
 import { useRoute } from 'vue-router'
 import VisualEditor from '../components/editor/VisualEditor.vue'
 import MdiIcon from '../components/icons/MdiIcon.vue'
+import AiEditorPanel from '../components/ai-editor/AiEditorPanel.vue'
 import ReviewPanel from '../components/review/ReviewPanel.vue'
 import ReviewPreview from '../components/review/ReviewPreview.vue'
 import VersionCompareWorkspace from '../components/history/VersionCompareWorkspace.vue'
@@ -12,6 +13,8 @@ import { useEditorDocumentStatus } from '../composables/useEditorDocumentStatus'
 import { useSidebarState } from '../composables/useSidebarState'
 import { useDocumentsStore } from '../stores/documentsStore'
 import { useUserStore } from '../stores/userStore'
+import { applyContextPatch } from '../utils/applyContextPatch.js'
+import { updateAnchorAfterContextPatch } from '../utils/editorAnchor.js'
 import { hasWorkingChanges } from '../utils/markdownDiff'
 
 const route = useRoute()
@@ -27,6 +30,8 @@ const workspaceMode = ref('edit')
 const sourceOpen = ref(false)
 const sideTab = ref('review')
 const selectedRange = ref(null)
+const brushActive = ref(false)
+const visualEditorRef = ref(null)
 const saveTimer = ref(null)
 const lastSavedContent = ref('')
 const lastSavedTitle = ref('')
@@ -110,6 +115,13 @@ const canEditTitle = computed(
   () => workspaceMode.value === 'edit' && isWritable.value,
 )
 
+const showAnchorTools = computed(() => {
+  const canComment = capabilities.value?.canComment ?? false
+  if (workspaceMode.value === 'review') return canComment
+  if (workspaceMode.value === 'edit') return canComment || isWritable.value
+  return false
+})
+
 const footerStatus = computed(() => ({
   statusText: statusText.value,
   wordCount: wordCount.value,
@@ -122,6 +134,7 @@ function resetWorkspaceUi() {
   sourceOpen.value = false
   workspaceMode.value = 'edit'
   selectedRange.value = null
+  brushActive.value = false
 }
 
 async function openDocument(documentId) {
@@ -150,7 +163,14 @@ watch(
 )
 
 watch(workspaceMode, (mode) => {
-  if (mode === 'review' || mode === 'compare') sourceOpen.value = false
+  if (mode === 'review' || mode === 'compare') {
+    sourceOpen.value = false
+    if (sideTab.value === 'ai') sideTab.value = 'review'
+  }
+})
+
+watch(sideTab, () => {
+  visualEditorRef.value?.refreshAnchorDecoration()
 })
 
 function syncDraftFromStore() {
@@ -284,20 +304,23 @@ async function submitActorDraft() {
 }
 
 function handleSelection(range) {
-  if (!range) {
-    selectedRange.value = null
-    return
-  }
+  selectedRange.value = range ?? null
+}
 
-  selectedRange.value = {
-    anchorFrom: range.anchorFrom,
-    anchorTo: range.anchorTo,
-    anchorText: range.anchorText,
-    anchor: {
-      from: range.anchorFrom,
-      to: range.anchorTo,
-      quotedText: range.anchorText,
-    },
+function handleAiApplyReplacement({ selection, newContextText }) {
+  try {
+    const cursor = selection.contextFrom + newContextText.length
+    draft.content = applyContextPatch(draft.content, selection, newContextText)
+    selectedRange.value = updateAnchorAfterContextPatch(selection, newContextText)
+    nextTick(() => {
+      if (sourceOpen.value) {
+        visualEditorRef.value?.setSourceCursor(cursor)
+      } else {
+        visualEditorRef.value?.refreshAnchorDecoration()
+      }
+    })
+  } catch (error) {
+    window.alert(error?.message || 'Не удалось заменить контекст')
   }
 }
 
@@ -516,6 +539,10 @@ async function restoreVersion(versionId) {
               :head-content="headSnapshot?.content ?? ''"
               :head-version-number="headVersion?.number ?? 0"
               :submitted-drafts="documentsStore.submittedDrafts"
+              :committed-anchor="selectedRange"
+              :show-anchor-tools="showAnchorTools"
+              v-model:brush-active="brushActive"
+              @selection-change="handleSelection"
             />
             <VersionCompareWorkspace
               v-else-if="workspaceMode === 'compare'"
@@ -523,10 +550,14 @@ async function restoreVersion(versionId) {
             />
             <VisualEditor
               v-else
+              ref="visualEditorRef"
               v-model="draft.content"
               v-model:source-open="sourceOpen"
+              v-model:brush-active="brushActive"
               :document-title="draft.title"
               :readonly="!isWritable"
+              :committed-anchor="selectedRange"
+              :show-anchor-tools="showAnchorTools"
               @selection-change="handleSelection"
             />
           </div>
@@ -536,6 +567,14 @@ async function restoreVersion(versionId) {
           <div class="tabbar">
             <button type="button" :class="{ active: sideTab === 'review' }" @click="sideTab = 'review'">
               Замечания
+            </button>
+            <button
+              v-if="workspaceMode === 'edit'"
+              type="button"
+              :class="{ active: sideTab === 'ai' }"
+              @click="sideTab = 'ai'"
+            >
+              ИИ редактор
             </button>
             <button type="button" :class="{ active: sideTab === 'history' }" @click="sideTab = 'history'">
               История
@@ -555,8 +594,14 @@ async function restoreVersion(versionId) {
             @resolve-comment="(id, resolution) => documentsStore.resolveComment(id, userStore.actor, resolution)"
             @reopen-comment="(id) => documentsStore.reopenComment(id, userStore.actor)"
           />
+          <AiEditorPanel
+            v-else-if="sideTab === 'ai'"
+            :selected-range="selectedRange"
+            :is-writable="isWritable"
+            @apply-replacement="handleAiApplyReplacement"
+          />
           <VersionPanel
-            v-else
+            v-else-if="sideTab === 'history'"
             :versions="documentsStore.versions"
             :can-restore="isWritable || canTakeLock"
             @restore="restoreVersion"
