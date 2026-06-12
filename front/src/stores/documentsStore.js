@@ -11,6 +11,7 @@ export const useDocumentsStore = defineStore('documents', {
     headSnapshot: null,
     actorDraft: null,
     loading: false,
+    bundleLoading: false,
     saving: false,
     error: '',
   }),
@@ -56,8 +57,18 @@ export const useDocumentsStore = defineStore('documents', {
       return document
     },
 
+    clearEditorContext() {
+      this.currentDocument = null
+      this.versions = []
+      this.submittedDrafts = []
+      this.comments = []
+      this.headSnapshot = null
+      this.actorDraft = null
+      this.error = ''
+    },
+
     async loadEditorBundle(documentId, actor) {
-      this.loading = true
+      this.bundleLoading = true
       this.error = ''
       try {
         const bundle = await documentsApi.getEditorBundle(documentId, actor)
@@ -70,7 +81,7 @@ export const useDocumentsStore = defineStore('documents', {
       } catch (error) {
         this.error = error.message
       } finally {
-        this.loading = false
+        this.bundleLoading = false
       }
     },
 

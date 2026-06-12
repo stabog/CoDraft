@@ -1,3 +1,5 @@
+import { locatePlainRangeInMarkdown } from './markdownPlainAlignment.js'
+
 function collapseWhitespace(text) {
   return text.replace(/\s+/g, ' ').trim()
 }
@@ -9,6 +11,9 @@ function collapseWhitespace(text) {
  * @returns {{ anchorFrom: number, anchorTo: number, markdownSlice: string } | null}
  */
 export function locatePlainTextInContent(content, plainText, hintFrom = 0) {
+  const aligned = locatePlainRangeInMarkdown(content, plainText, hintFrom)
+  if (aligned) return aligned
+
   const trimmed = plainText.trim()
   if (!trimmed) return null
 
@@ -52,13 +57,7 @@ export function locatePlainTextInContent(content, plainText, hintFrom = 0) {
 
   if (bestMatch) {
     const { needleLength: _needleLength, ...match } = bestMatch
-
-    if (match.markdownSlice.trim() === trimmed) {
-      return match
-    }
-
-    const expanded = expandMatchToPlainText(content, match.anchorFrom, trimmed)
-    return expanded ?? match
+    return match
   }
 
   const normalizedNeedle = collapseWhitespace(trimmed)
@@ -86,41 +85,5 @@ export function locatePlainTextInContent(content, plainText, hintFrom = 0) {
     anchorFrom,
     anchorTo: anchorFrom + exactNeedle.length,
     markdownSlice: content.slice(anchorFrom, anchorFrom + exactNeedle.length),
-  }
-}
-
-/**
- * @param {string} content
- * @param {number} startIndex
- * @param {string} plainText
- * @returns {{ anchorFrom: number, anchorTo: number, markdownSlice: string } | null}
- */
-function expandMatchToPlainText(content, startIndex, plainText) {
-  const lines = plainText.split('\n').map((line) => line.trim()).filter(Boolean)
-  if (!lines.length) return null
-
-  let cursor = startIndex
-  let matched = 0
-
-  for (const line of lines) {
-    const index = content.indexOf(line, cursor)
-    if (index < 0) return null
-    if (matched === 0) cursor = index
-    matched += 1
-    cursor = index + line.length
-  }
-
-  const anchorFrom = content.indexOf(lines[0], startIndex)
-  if (anchorFrom < 0) return null
-
-  const lastLine = lines[lines.length - 1]
-  const lastIndex = content.indexOf(lastLine, anchorFrom)
-  if (lastIndex < 0) return null
-
-  const anchorTo = lastIndex + lastLine.length
-  return {
-    anchorFrom,
-    anchorTo,
-    markdownSlice: content.slice(anchorFrom, anchorTo),
   }
 }

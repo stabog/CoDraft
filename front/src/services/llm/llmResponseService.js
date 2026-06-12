@@ -92,6 +92,7 @@ export function buildUniversalRequestData({
     max_tokens = 1000,
     n = 1,
     providerSort = 'price',
+    reasoning,
   } = options || {}
 
   const requestData = {
@@ -101,7 +102,7 @@ export function buildUniversalRequestData({
     n,
     temperature,
     max_tokens,
-    reasoning: { exclude: true, effort: 'minimal' }, // минимум размышлений, не возвращаем в ответ
+    reasoning: reasoning ?? { exclude: true, effort: 'minimal' },
   }
 
   if ((structured || jsonSchema) && jsonSchema) {
@@ -151,10 +152,26 @@ async function handleNonStreamJson(requestData, { handlers = {}, context, transp
     transport
   )
 
-  const rawText = response?.choices?.[0]?.message?.content ?? ''
-  const usage = response?.usage || response?.choices?.[0]?.usage || null
+  const choice = response?.choices?.[0]
+  const rawText = choice?.message?.content ?? ''
+  const usage = response?.usage || choice?.usage || null
+  const finishReason = choice?.finish_reason ?? choice?.native_finish_reason
+  const truncated = finishReason === 'length' || finishReason === 'MAX_TOKENS'
 
-  const json = parseStructuredJson(rawText)
+  let json
+  try {
+    json = parseStructuredJson(rawText)
+  } catch (parseError) {
+    if (truncated) {
+      const err = new Error(
+        'Ответ LLM обрезан по лимиту токенов. Попробуйте ещё раз или смените модель.',
+      )
+      err.raw = rawText
+      err.finishReason = finishReason
+      throw err
+    }
+    throw parseError
+  }
 
   safeCall(() => handlers.onJsonDone && handlers.onJsonDone(
     { json, raw: response, meta: usage ? { usage } : undefined },

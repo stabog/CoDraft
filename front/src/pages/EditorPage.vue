@@ -13,6 +13,7 @@ import { useEditorDocumentStatus } from '../composables/useEditorDocumentStatus'
 import { useSidebarState } from '../composables/useSidebarState'
 import { useDocumentsStore } from '../stores/documentsStore'
 import { useUserStore } from '../stores/userStore'
+import { anchorDebug } from '../utils/anchorDebug.js'
 import { applyContextPatch } from '../utils/applyContextPatch.js'
 import { updateAnchorAfterContextPatch } from '../utils/editorAnchor.js'
 import { hasWorkingChanges } from '../utils/markdownDiff'
@@ -35,7 +36,7 @@ const visualEditorRef = ref(null)
 const saveTimer = ref(null)
 const lastSavedContent = ref('')
 const lastSavedTitle = ref('')
-const ready = ref(false)
+let bundleGeneration = 0
 
 const capabilities = computed(() => documentsStore.capabilities)
 const headVersion = computed(() => documentsStore.headVersion)
@@ -137,23 +138,41 @@ function resetWorkspaceUi() {
   brushActive.value = false
 }
 
-async function openDocument(documentId) {
+function isEditorHydrated() {
+  return documentsStore.currentDocument?.id === route.params.id
+}
+
+function switchDocumentContext(documentId) {
   clearTimeout(saveTimer.value)
+  resetWorkspaceUi()
+  bundleGeneration += 1
+  documentsStore.clearEditorContext()
+
+  const summary = documentsStore.documents.find((item) => item.id === documentId)
+  draft.title = summary?.title ?? ''
+  draft.content = ''
+  lastSavedTitle.value = ''
+  lastSavedContent.value = ''
+}
+
+async function hydrateDocumentBundle(documentId) {
+  const generation = bundleGeneration
   await documentsStore.loadEditorBundle(documentId, userStore.actor)
+  if (generation !== bundleGeneration || route.params.id !== documentId) return
   syncDraftFromStore()
 }
 
-onMounted(async () => {
-  await openDocument(route.params.id)
-  ready.value = true
+onMounted(() => {
+  switchDocumentContext(route.params.id)
+  hydrateDocumentBundle(route.params.id)
 })
 
 watch(
   () => route.params.id,
-  async (nextId, prevId) => {
+  (nextId, prevId) => {
     if (!prevId || nextId === prevId) return
-    resetWorkspaceUi()
-    await openDocument(nextId)
+    switchDocumentContext(nextId)
+    hydrateDocumentBundle(nextId)
   },
 )
 
@@ -175,7 +194,7 @@ watch(sideTab, () => {
 
 function syncDraftFromStore() {
   const doc = documentsStore.currentDocument
-  if (!doc) return
+  if (!doc || doc.id !== route.params.id) return
 
   if (isRound.value && doc.draft) {
     draft.title = doc.draft.title
@@ -199,12 +218,14 @@ function syncDraftFromStore() {
 }
 
 function scheduleSave() {
-  if (!ready.value || !isWritable.value) return
+  if (!isEditorHydrated() || !isWritable.value || documentsStore.bundleLoading) return
 
   clearTimeout(saveTimer.value)
   if (draft.title === lastSavedTitle.value && draft.content === lastSavedContent.value) return
 
   saveTimer.value = setTimeout(async () => {
+    if (!isEditorHydrated()) return
+
     if (isRound.value || (isOwnerHub.value && capabilities.value?.canEditDraft)) {
       await documentsStore.updateDraft(route.params.id, userStore.actor, {
         title: draft.title,
@@ -304,6 +325,12 @@ async function submitActorDraft() {
 }
 
 function handleSelection(range) {
+  anchorDebug('EditorPage:handleSelection', {
+    hasRange: Boolean(range),
+    source: range?.source ?? null,
+    anchorTextPreview: range?.anchorText ? String(range.anchorText).slice(0, 80) : null,
+    hasContextText: Boolean(range?.contextText),
+  })
   selectedRange.value = range ?? null
 }
 
@@ -346,10 +373,14 @@ async function restoreVersion(versionId) {
 
 <template>
   <section class="editor-page">
-    <div v-if="documentsStore.loading || !ready" class="editor-state muted">Открываем документ...</div>
-    <div v-else-if="documentsStore.error" class="editor-state error">{{ documentsStore.error }}</div>
+    <div v-if="documentsStore.error && !isEditorHydrated()" class="editor-state error">
+      {{ documentsStore.error }}
+    </div>
 
     <template v-else>
+      <div v-if="documentsStore.error" class="alert-banner error-banner">
+        {{ documentsStore.error }}
+      </div>
       <div v-if="actorDraftMeta?.needsRebase" class="alert-banner">
         <span>Опубликована новая версия. Ваш черновик привязан к старому head.</span>
         <button type="button" class="secondary compact" @click="rebaseActorDraft">
@@ -528,7 +559,13 @@ async function restoreVersion(versionId) {
             </div>
           </header>
 
-          <div class="editor-canvas" :class="{ 'is-readonly': !isWritable && workspaceMode === 'edit' }">
+          <div
+            class="editor-canvas"
+            :class="{
+              'is-readonly': !isWritable && workspaceMode === 'edit',
+              'is-loading': documentsStore.bundleLoading,
+            }"
+          >
             <div v-if="showReadonlyStrip" class="readonly-strip">
               <span>{{ readonlyHint }}</span>
             </div>
@@ -550,6 +587,7 @@ async function restoreVersion(versionId) {
             />
             <VisualEditor
               v-else
+              :key="route.params.id"
               ref="visualEditorRef"
               v-model="draft.content"
               v-model:source-open="sourceOpen"
@@ -635,6 +673,12 @@ async function restoreVersion(versionId) {
   gap: 12px;
   justify-content: space-between;
   padding: 6px 16px;
+}
+
+.alert-banner.error-banner {
+  background: rgba(224, 62, 62, 0.1);
+  border-bottom-color: rgba(224, 62, 62, 0.35);
+  color: var(--color-red);
 }
 
 .compact {
@@ -913,6 +957,11 @@ async function restoreVersion(versionId) {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+}
+
+.editor-canvas.is-loading {
+  opacity: 0.72;
+  pointer-events: none;
 }
 
 .editor-canvas.is-readonly :deep(.markdown-input) {

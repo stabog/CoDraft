@@ -64,3 +64,30 @@ export function isCanonicalPosInsideAnchor(pos, anchor) {
 export function isPmPosInsideAnchor(pos, anchor) {
   return pos >= anchor.pmFrom && pos < anchor.pmTo
 }
+
+/**
+ * @param {{ pmFrom: number, pmTo: number }} anchorPm
+ * @param {{ from: number, to: number }} selection
+ * @returns {{ from: number, to: number }}
+ */
+export function mergePmSelectionWithAnchor(anchorPm, selection) {
+  return {
+    from: Math.min(anchorPm.pmFrom, anchorPm.pmTo, selection.from, selection.to),
+    to: Math.max(anchorPm.pmFrom, anchorPm.pmTo, selection.from, selection.to),
+  }
+}
+
+/**
+ * @param {{ anchorFrom: number, anchorTo: number }} anchor
+ * @param {number} start
+ * @param {number} end
+ * @returns {{ anchorFrom: number, anchorTo: number }}
+ */
+export function mergeCanonicalSelectionWithAnchor(anchor, start, end) {
+  const lo = Math.min(start, end)
+  const hi = Math.max(start, end)
+  return {
+    anchorFrom: Math.min(anchor.anchorFrom, lo),
+    anchorTo: Math.max(anchor.anchorTo, hi),
+  }
+}

@@ -1,6 +1,8 @@
 import { editorViewCtx } from '@milkdown/core'
 import { getMarkdown } from '@milkdown/utils'
 import { fromEditorMarkdown } from './markdownLineBreaks.js'
+import { anchorDebug, anchorDebugWarn } from './anchorDebug.js'
+import { locatePlainRangeInMarkdown, toComparablePlain } from './markdownPlainAlignment.js'
 import { locatePlainTextInContent } from './locatePlainTextInContent.js'
 import { resolveLineContext } from './resolveLineContext.js'
 
@@ -27,49 +29,24 @@ function serializePmRangeToCanonical(ctx, from, to) {
  * @param {string} plainText
  */
 function anchorSliceMatchesPlain(markdownSlice, plainText) {
-  const plain = plainText.trim()
+  const plain = plainText.trim().replace(/\s+/g, ' ')
   if (!plain || !markdownSlice) return false
-
-  const fromMd = markdownSlice
-    .replace(/[#*_`~\[\]()>|]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-  const normPlain = plain.replace(/\s+/g, ' ').trim()
-
-  if (fromMd === normPlain) return true
-
-  const shorter = Math.min(fromMd.length, normPlain.length)
-  const longer = Math.max(fromMd.length, normPlain.length)
-  if (shorter === 0) return false
-
-  if (fromMd.includes(normPlain) || normPlain.includes(fromMd)) {
-    return shorter / longer >= 0.9
-  }
-
-  return false
+  return toComparablePlain(markdownSlice) === plain
 }
 
 /**
  * @param {string} canonicalContent
  * @param {string} plainText
- * @param {number} anchorFrom
- * @param {number} anchorTo
  * @param {number} hintFrom
  */
-function ensureAnchorsMatchPlain(canonicalContent, plainText, anchorFrom, anchorTo, hintFrom) {
-  const slice = canonicalContent.slice(anchorFrom, anchorTo)
-  if (anchorSliceMatchesPlain(slice, plainText)) {
-    return { anchorFrom, anchorTo }
+function resolveAnchorsFromPlain(canonicalContent, plainText, hintFrom) {
+  const aligned = locatePlainRangeInMarkdown(canonicalContent, plainText, hintFrom)
+  if (aligned) {
+    return { anchorFrom: aligned.anchorFrom, anchorTo: aligned.anchorTo }
   }
 
-  const located = locatePlainTextInContent(
-    canonicalContent,
-    plainText,
-    anchorFrom >= 0 ? anchorFrom : hintFrom,
-  )
-  if (!located) {
-    return { anchorFrom, anchorTo }
-  }
+  const located = locatePlainTextInContent(canonicalContent, plainText, hintFrom)
+  if (!located) return null
 
   return { anchorFrom: located.anchorFrom, anchorTo: located.anchorTo }
 }
@@ -99,7 +76,10 @@ export function mapPmSelectionToCanonical(ctx, selection, canonicalContent) {
 
   const view = ctx.get(editorViewCtx)
   const plainText = view.state.doc.textBetween(from, to, '\n\n', '\n')
-  if (!plainText.trim()) return null
+  if (!plainText.trim()) {
+    anchorDebugWarn('mapPm:fail', 'empty plainText', { from, to })
+    return null
+  }
 
   const docSize = view.state.doc.content.size
   const hintFrom =
@@ -107,6 +87,9 @@ export function mapPmSelectionToCanonical(ctx, selection, canonicalContent) {
 
   let anchorFrom = -1
   let anchorTo = -1
+  let serializerHint = hintFrom
+  /** @type {{ anchorFrom: number, anchorTo: number } | null} */
+  let serializerCandidates = null
 
   try {
     const prefix = serializePmRangeToCanonical(ctx, 0, from)
@@ -118,36 +101,66 @@ export function mapPmSelectionToCanonical(ctx, selection, canonicalContent) {
       const sliceLength = focusMarkdown.trim().length
 
       if (!plainLength || sliceLength >= plainLength * 0.4) {
-        anchorFrom = prefix.length
-        anchorTo = through.length
+        const candidateFrom = prefix.length
+        const candidateTo = through.length
+        const slice = canonicalContent.slice(candidateFrom, candidateTo)
+
+        if (anchorSliceMatchesPlain(slice, plainText)) {
+          anchorFrom = candidateFrom
+          anchorTo = candidateTo
+        } else {
+          serializerHint = candidateFrom
+          serializerCandidates = { anchorFrom: candidateFrom, anchorTo: candidateTo }
+        }
       }
     }
   } catch (error) {
     console.warn('Не удалось сопоставить выделение через сериализатор Milkdown', error)
   }
 
-  if (anchorFrom < 0) {
-    const located = locatePlainTextInContent(canonicalContent, plainText, hintFrom)
-    if (!located) return null
+  let mappingSource = 'serializer'
 
-    anchorFrom = located.anchorFrom
-    anchorTo = located.anchorTo
-  } else {
-    const verified = ensureAnchorsMatchPlain(
-      canonicalContent,
-      plainText,
-      anchorFrom,
-      anchorTo,
-      hintFrom,
-    )
-    anchorFrom = verified.anchorFrom
-    anchorTo = verified.anchorTo
+  if (anchorFrom < 0) {
+    mappingSource = 'plain-alignment'
+    const resolved = resolveAnchorsFromPlain(canonicalContent, plainText, serializerHint)
+    if (resolved) {
+      anchorFrom = resolved.anchorFrom
+      anchorTo = resolved.anchorTo
+    } else if (serializerCandidates) {
+      mappingSource = 'serializer-fallback'
+      anchorFrom = serializerCandidates.anchorFrom
+      anchorTo = serializerCandidates.anchorTo
+      anchorDebug('mapPm:serializer-fallback', {
+        anchorFrom,
+        anchorTo,
+        plainTextPreview: plainText.slice(0, 80),
+      })
+    } else {
+      anchorDebugWarn('mapPm:fail', 'resolveAnchorsFromPlain returned null', {
+        plainTextPreview: plainText.slice(0, 80),
+        serializerHint,
+        canonicalLength: canonicalContent.length,
+      })
+      return null
+    }
   }
 
   const lineContext = resolveLineContext(canonicalContent, anchorFrom, anchorTo)
-  if (!lineContext) return null
+  if (!lineContext) {
+    anchorDebugWarn('mapPm:fail', 'resolveLineContext returned null', { anchorFrom, anchorTo })
+    return null
+  }
 
   const focusText = canonicalContent.slice(anchorFrom, anchorTo)
+  anchorDebug('mapPm:success', {
+    mappingSource,
+    anchorFrom,
+    anchorTo,
+    plainTextPreview: plainText.slice(0, 80),
+    focusTextPreview: focusText.slice(0, 80),
+    contextLines: `${lineContext.lineStart}-${lineContext.lineEnd}`,
+  })
+
   const { focusText: _lineFocus, ...lineContextRest } = lineContext
 
   return {

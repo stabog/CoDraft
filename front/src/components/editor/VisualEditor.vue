@@ -15,13 +15,18 @@ import {
   createAnchorHighlightPlugin,
   refreshAnchorHighlight,
 } from '../../utils/anchorHighlightPlugin.js'
-import { isCanonicalPosInsideAnchor } from '../../utils/editorAnchor.js'
+import {
+  isCanonicalPosInsideAnchor,
+  mergeCanonicalSelectionWithAnchor,
+  mergePmSelectionWithAnchor,
+} from '../../utils/editorAnchor.js'
 import { buildEditorSelection } from '../../utils/editorSelection.js'
 import {
   getCanonicalContentFromEditor,
   mapPmSelectionToCanonical,
 } from '../../utils/mapPmSelectionToCanonical.js'
 import { resolvePmRangeFromCanonical } from '../../utils/resolvePmRangeFromCanonical.js'
+import { anchorDebug, anchorDebugWarn } from '../../utils/anchorDebug.js'
 import { fromEditorMarkdown, toEditorMarkdown } from '../../utils/markdownLineBreaks'
 import EditorToolbar from './EditorToolbar.vue'
 
@@ -56,8 +61,31 @@ const editor = ref(null)
 const applyingExternalChange = ref(false)
 const lastEditorMarkdown = ref('')
 const pmHighlightRange = ref(null)
+let suppressSelectionUntil = 0
 
 const showFormatting = computed(() => !props.readonly && !sourceOpen.value)
+
+function suppressSelectionHandling() {
+  suppressSelectionUntil = performance.now() + 80
+}
+
+function isSelectionHandlingSuppressed() {
+  return performance.now() < suppressSelectionUntil
+}
+
+function isNearFullDocumentSelection(view, from, to) {
+  const size = view.state.doc.content.size
+  if (size <= 1) return false
+  return from <= 1 && to >= size - 1 && (to - from) / size > 0.9
+}
+
+function isSelectionKeyboardEvent(event) {
+  if (event.ctrlKey || event.metaKey) {
+    return event.key === 'a' || event.key === 'A'
+  }
+  if (!event.shiftKey) return false
+  return ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)
+}
 
 const copyText = computed(() => {
   const title = props.documentTitle?.trim()
@@ -77,8 +105,7 @@ function readEditorMarkdown() {
 }
 
 function shouldSkipExternalSync(markdown) {
-  const editorMarkdown = toEditorMarkdown(markdown)
-  if (editorMarkdown === lastEditorMarkdown.value) return true
+  const editorMarkdown = toEditorMarkdown(markdown || '')
   const current = readEditorMarkdown()
   if (current === editorMarkdown) {
     lastEditorMarkdown.value = editorMarkdown
@@ -127,12 +154,34 @@ function toggleSource() {
   openSource()
 }
 
-function shouldCommitAnchor(altKey) {
-  if (!props.showAnchorTools) return false
-  return brushActive.value || altKey
+function shouldExtendAnchor(shiftKey) {
+  return Boolean(props.showAnchorTools && props.committedAnchor && shiftKey)
 }
 
-function clearAnchor() {
+function shouldCommitAnchor(altKey, shiftKey = false) {
+  const canExtend = shouldExtendAnchor(shiftKey)
+  const canCommit = props.showAnchorTools && (brushActive.value || altKey)
+  const canCommitOrExtend = canCommit || canExtend
+  anchorDebug('shouldCommitAnchor', {
+    canCommit: canCommitOrExtend,
+    canExtend,
+    showAnchorTools: props.showAnchorTools,
+    brushActive: brushActive.value,
+    altKey: Boolean(altKey),
+    shiftKey: Boolean(shiftKey),
+    sourceOpen: sourceOpen.value,
+  })
+  return canCommitOrExtend
+}
+
+function resolveCommittedAnchorPmRange(ctx) {
+  const anchor = props.committedAnchor
+  if (!anchor || anchor.anchorFrom == null || anchor.anchorTo == null) return null
+  return resolvePmRangeFromCanonical(ctx, anchor.anchorFrom, anchor.anchorTo)
+}
+
+function clearAnchor(reason = 'unknown') {
+  anchorDebug('clearAnchor', { reason })
   pmHighlightRange.value = null
   emit('selection-change', null)
   if (editor.value && !sourceOpen.value) {
@@ -143,12 +192,24 @@ function clearAnchor() {
 }
 
 function commitVisualAnchor(ctx, pmSelection) {
-  if (pmSelection.from === pmSelection.to) return
+  if (pmSelection.from === pmSelection.to) {
+    anchorDebug('commitVisualAnchor:skip', { reason: 'empty-pm-selection' })
+    return
+  }
 
   const canonicalContent = getCanonicalContentFromEditor(ctx)
+  anchorDebug('commitVisualAnchor:start', {
+    pmFrom: pmSelection.from,
+    pmTo: pmSelection.to,
+    canonicalLength: canonicalContent.length,
+  })
+
   const mapped = mapPmSelectionToCanonical(ctx, pmSelection, canonicalContent)
   if (!mapped) {
-    clearAnchor()
+    anchorDebugWarn('commitVisualAnchor:fail', 'mapPmSelectionToCanonical returned null', {
+      pmFrom: pmSelection.from,
+      pmTo: pmSelection.to,
+    })
     return
   }
 
@@ -171,15 +232,24 @@ function commitVisualAnchor(ctx, pmSelection) {
     },
   )
   if (!editorSelection) {
-    clearAnchor()
+    anchorDebugWarn('commitVisualAnchor:fail', 'buildEditorSelection returned null')
     return
   }
 
   pmHighlightRange.value = { pmFrom: pmSelection.from, pmTo: pmSelection.to }
+  anchorDebug('commitVisualAnchor:success', {
+    anchorFrom: editorSelection.anchorFrom,
+    anchorTo: editorSelection.anchorTo,
+    anchorTextPreview: String(editorSelection.anchorText ?? '').slice(0, 80),
+    contextFrom: editorSelection.contextFrom,
+    contextTo: editorSelection.contextTo,
+    hasContextText: Boolean(editorSelection.contextText),
+  })
   emit('selection-change', editorSelection)
 
   const view = ctx.get(editorViewCtx)
   const collapsePos = Math.min(pmSelection.to, view.state.doc.content.size)
+  suppressSelectionHandling()
   const tr = view.state.tr
     .setSelection(TextSelection.create(view.state.doc, collapsePos))
     .setMeta(anchorHighlightKey, { refresh: true })
@@ -198,13 +268,49 @@ function isInsideCommittedAnchorPm(ctx, pmPos) {
   return pmPos >= resolved.pmFrom && pmPos < resolved.pmTo
 }
 
-function handleVisualSelectionSettled(view, ctx, altKey) {
+function handleVisualSelectionSettled(view, ctx, altKey, shiftKey = false) {
+  if (isSelectionHandlingSuppressed()) {
+    anchorDebug('visualSelectionSettled:ignored', { reason: 'suppressed-programmatic' })
+    return
+  }
+
   const { selection } = view.state
-  const commitIntent = shouldCommitAnchor(altKey)
+  const commitIntent = shouldCommitAnchor(altKey, shiftKey)
+  const extendIntent = shouldExtendAnchor(shiftKey)
+
+  anchorDebug('visualSelectionSettled', {
+    empty: selection.empty,
+    pmFrom: selection.from,
+    pmTo: selection.to,
+    commitIntent,
+    extendIntent,
+    hasCommittedAnchor: Boolean(props.committedAnchor),
+  })
 
   if (!selection.empty) {
+    if (isNearFullDocumentSelection(view, selection.from, selection.to)) {
+      anchorDebug('visualSelectionSettled:ignored', { reason: 'near-full-document' })
+      return
+    }
+
     if (commitIntent) {
-      commitVisualAnchor(ctx, selection)
+      let pmSelection = selection
+      if (extendIntent) {
+        const anchorPm = resolveCommittedAnchorPmRange(ctx)
+        if (anchorPm) {
+          pmSelection = mergePmSelectionWithAnchor(anchorPm, selection)
+          anchorDebug('extendAnchor:merge', {
+            anchorPm,
+            selection: { from: selection.from, to: selection.to },
+            merged: pmSelection,
+          })
+        }
+      }
+      commitVisualAnchor(ctx, pmSelection)
+    } else {
+      anchorDebug('visualSelectionSettled:ignored', {
+        reason: 'selection-without-commit-intent',
+      })
     }
     return
   }
@@ -212,14 +318,19 @@ function handleVisualSelectionSettled(view, ctx, altKey) {
   if (!props.committedAnchor || !brushActive.value) return
 
   if (!isInsideCommittedAnchorPm(ctx, selection.from)) {
-    clearAnchor()
+    anchorDebug('visualSelectionSettled:cursor-outside-anchor', {
+      pmPos: selection.from,
+      reason: 'anchor-kept-for-shift-extend',
+    })
   }
 }
 
 let sourcePointerAltKey = false
+let sourcePointerShiftKey = false
 
 function onSourcePointerDown(event) {
   sourcePointerAltKey = event.altKey
+  sourcePointerShiftKey = event.shiftKey
 }
 
 function resizeSourceInput() {
@@ -236,18 +347,37 @@ function handleSourcePointer(event) {
   if (!element) return
 
   const altKey = sourcePointerAltKey || event.altKey
+  const shiftKey = sourcePointerShiftKey || event.shiftKey
   const start = element.selectionStart
   const end = element.selectionEnd
-  const commitIntent = shouldCommitAnchor(altKey)
+  const commitIntent = shouldCommitAnchor(altKey, shiftKey)
+  const extendIntent = shouldExtendAnchor(shiftKey)
 
   if (start !== end) {
-    if (!commitIntent) return
-
-    const selection = buildEditorSelection(model.value, start, end, 'source')
-    if (!selection) {
-      clearAnchor()
+    if (!commitIntent) {
+      anchorDebug('sourceSelection:ignored', { start, end, reason: 'no-commit-intent' })
       return
     }
+
+    let rangeStart = start
+    let rangeEnd = end
+    if (extendIntent && props.committedAnchor) {
+      const merged = mergeCanonicalSelectionWithAnchor(props.committedAnchor, start, end)
+      rangeStart = merged.anchorFrom
+      rangeEnd = merged.anchorTo
+      anchorDebug('extendAnchor:merge-source', { start, end, merged })
+    }
+
+    const selection = buildEditorSelection(model.value, rangeStart, rangeEnd, 'source')
+    if (!selection) {
+      clearAnchor('source buildEditorSelection returned null')
+      return
+    }
+    anchorDebug('sourceSelection:success', {
+      anchorFrom: selection.anchorFrom,
+      anchorTo: selection.anchorTo,
+      anchorTextPreview: String(selection.anchorText ?? '').slice(0, 80),
+    })
     emit('selection-change', selection)
     nextTick(() => {
       element.setSelectionRange(end, end)
@@ -258,7 +388,10 @@ function handleSourcePointer(event) {
   if (!props.committedAnchor || !brushActive.value) return
 
   if (!isCanonicalPosInsideAnchor(start, props.committedAnchor)) {
-    clearAnchor()
+    anchorDebug('sourceSelection:cursor-outside-anchor', {
+      pos: start,
+      reason: 'anchor-kept-for-shift-extend',
+    })
   }
 }
 
@@ -273,6 +406,7 @@ function syncPmHighlightFromAnchor() {
       pmHighlightRange.value = resolvePmRangeFromCanonical(ctx, anchor.anchorFrom, anchor.anchorTo)
     }
 
+    suppressSelectionHandling()
     refreshAnchorHighlight(ctx.get(editorViewCtx))
   })
 }
@@ -280,6 +414,7 @@ function syncPmHighlightFromAnchor() {
 function attachEditorPlugins(ctx) {
   let pointerSelecting = false
   let selectionAltKey = false
+  let selectionShiftKey = false
 
   const anchorPlugin = createAnchorHighlightPlugin(
     () => pmHighlightRange.value,
@@ -292,19 +427,34 @@ function attachEditorPlugins(ctx) {
         mousedown: (_view, event) => {
           pointerSelecting = true
           selectionAltKey = event.altKey
+          selectionShiftKey = event.shiftKey
+          anchorDebug('pointerdown', {
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            brushActive: brushActive.value,
+          })
           return false
         },
         mouseup: (view, event) => {
           pointerSelecting = false
           const altKey = selectionAltKey || event.altKey
+          const shiftKey = selectionShiftKey || event.shiftKey
+          anchorDebug('pointerup', {
+            altKey,
+            shiftKey,
+            pmFrom: view.state.selection.from,
+            pmTo: view.state.selection.to,
+            empty: view.state.selection.empty,
+          })
           requestAnimationFrame(() => {
-            handleVisualSelectionSettled(view, ctx, altKey)
+            handleVisualSelectionSettled(view, ctx, altKey, shiftKey)
           })
           return false
         },
         keyup: (view, event) => {
           if (pointerSelecting) return false
-          handleVisualSelectionSettled(view, ctx, event.altKey)
+          if (!isSelectionKeyboardEvent(event)) return false
+          handleVisualSelectionSettled(view, ctx, event.altKey, event.shiftKey)
           return false
         },
       },

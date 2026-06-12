@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { buildToneChangePrompt } from '../../features/tone-picker/buildToneChangePrompt.js'
+import { buildToneDetectPrompt } from '../../features/tone-picker/buildToneDetectPrompt.js'
+import { parseToneDetectResponse } from '../../features/tone-picker/parseToneDetectResponse.js'
 import { parseToneResponse } from '../../features/tone-picker/parseToneResponse.js'
 import { cloneDefaultToneAxes } from '../../features/tone-picker/toneAxes.js'
 import {
@@ -9,7 +11,7 @@ import {
   toneValuesFromWheelPosition,
   wheelPositionFromToneAxes,
 } from '../../features/tone-picker/toneColorMapping.js'
-import { executePrompt } from '../../services/llm/llmClient.js'
+import { executePrompt, executeToneDetectPrompt } from '../../services/llm/llmClient.js'
 import PromptPreviewModal from './PromptPreviewModal.vue'
 
 const props = defineProps({
@@ -23,6 +25,8 @@ const toneAxes = ref(cloneDefaultToneAxes())
 const initialToneAxes = ref(cloneDefaultToneAxes())
 const isDraggingWheel = ref(false)
 const isApplying = ref(false)
+const isDetectingTone = ref(false)
+const toneBaselineDetected = ref(false)
 const errorMessage = ref('')
 const promptPreviewOpen = ref(false)
 const promptPreviewText = ref('')
@@ -45,6 +49,7 @@ watch(
   () => {
     toneAxes.value = cloneDefaultToneAxes()
     initialToneAxes.value = cloneDefaultToneAxes()
+    toneBaselineDetected.value = false
     errorMessage.value = ''
   },
 )
@@ -110,6 +115,32 @@ function openPromptPreview() {
   promptPreviewOpen.value = true
 }
 
+async function detectTone() {
+  if (!canUseTonePicker.value || !props.selectedRange?.focusText || isDetectingTone.value) return
+
+  errorMessage.value = ''
+  isDetectingTone.value = true
+
+  try {
+    const prompt = buildToneDetectPrompt(props.selectedRange.focusText)
+    const { result } = await executeToneDetectPrompt({ prompt })
+    const detected = parseToneDetectResponse(result)
+
+    if (!detected) {
+      errorMessage.value = 'Не удалось разобрать оценку тона от LLM.'
+      return
+    }
+
+    initialToneAxes.value = detected.map((axis) => ({ ...axis }))
+    toneAxes.value = detected.map((axis) => ({ ...axis }))
+    toneBaselineDetected.value = true
+  } catch (error) {
+    errorMessage.value = error?.message || 'Не удалось определить тон фрагмента.'
+  } finally {
+    isDetectingTone.value = false
+  }
+}
+
 async function applyToneChange() {
   if (!canUseTonePicker.value || !props.selectedRange || isApplying.value) return
 
@@ -163,7 +194,24 @@ onBeforeUnmount(() => {
       <p class="quote">"{{ selectedQuote }}"</p>
 
       <div class="tone-section">
-        <p class="section-label">Тон</p>
+        <div class="tone-section-header">
+          <p class="section-label">Тон</p>
+          <button
+            type="button"
+            class="secondary tone-detect-btn"
+            :disabled="!canUseTonePicker || isDetectingTone"
+            @click="detectTone"
+          >
+            {{ isDetectingTone ? 'Определяю…' : 'Определить тон' }}
+          </button>
+        </div>
+
+        <p v-if="!toneBaselineDetected" class="tone-baseline-hint">
+          Текущий тон не определён — в промпте используется 5 по всем осям. Нажмите «Определить тон».
+        </p>
+        <p v-else class="tone-baseline-hint tone-baseline-hint-detected">
+          Текущий тон определён. Сдвиньте колесо или слайдеры для целевого тона.
+        </p>
 
         <div
           ref="wheelRef"
@@ -257,6 +305,13 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.tone-section-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
 .section-label {
   color: var(--text-muted);
   font-size: 11px;
@@ -264,6 +319,25 @@ onBeforeUnmount(() => {
   letter-spacing: 0.04em;
   margin: 0;
   text-transform: uppercase;
+}
+
+.tone-detect-btn {
+  flex-shrink: 0;
+  font-size: 11px;
+  margin: 0;
+  min-height: 28px;
+  padding: 0 10px;
+}
+
+.tone-baseline-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.tone-baseline-hint-detected {
+  color: var(--text-faint);
 }
 
 .tone-wheel {
