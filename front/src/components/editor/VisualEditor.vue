@@ -1,5 +1,6 @@
 <script setup>
 import { Editor, defaultValueCtx, editorViewCtx, parserCtx, prosePluginsCtx, rootCtx } from '@milkdown/core'
+import { isHistoryTransaction } from '@milkdown/prose/history'
 import { Plugin } from '@milkdown/prose/state'
 import { TextSelection } from '@milkdown/prose/state'
 import { clipboard } from '@milkdown/plugin-clipboard'
@@ -428,6 +429,44 @@ function attachEditorPlugins(ctx) {
 
   const tablePastePlugin = createTablePastePlugin()
 
+  const historyAnchorPlugin = new Plugin({
+    appendTransaction(transactions, _oldState, newState) {
+      if (sourceOpen.value) return null
+      if (!transactions.some(isHistoryTransaction)) return null
+      if (!props.committedAnchor) return null
+
+      queueMicrotask(() => {
+        if (!editor.value) return
+        editor.value.action((ctx) => {
+          const view = ctx.get(editorViewCtx)
+          const anchor = props.committedAnchor
+          if (!anchor) return
+
+          const range = resolvePmHighlightRange(ctx, anchor)
+          let pos = range?.pmFrom ?? anchor.pmFrom ?? 1
+          pos = Math.max(1, Math.min(pos, view.state.doc.content.size))
+
+          suppressSelectionHandling()
+          view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos)))
+          view.focus()
+          clearAnchor('history-undo-redo')
+        })
+      })
+
+      let pos = pmHighlightRange.value?.pmFrom ?? props.committedAnchor?.pmFrom
+      if (pos == null) return null
+
+      for (const tr of transactions) {
+        pos = tr.mapping.map(pos, -1)
+      }
+      pos = Math.max(1, Math.min(pos, newState.doc.content.size))
+      if (newState.selection.empty && newState.selection.from === pos) return null
+
+      suppressSelectionHandling()
+      return newState.tr.setSelection(TextSelection.create(newState.doc, pos))
+    },
+  })
+
   const selectionPlugin = new Plugin({
     props: {
       handleDOMEvents: {
@@ -469,7 +508,7 @@ function attachEditorPlugins(ctx) {
   })
 
   ctx.update(prosePluginsCtx, (plugins) =>
-    plugins.concat(anchorPlugin, tablePastePlugin, selectionPlugin),
+    plugins.concat(anchorPlugin, tablePastePlugin, historyAnchorPlugin, selectionPlugin),
   )
 }
 
