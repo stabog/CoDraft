@@ -28,6 +28,9 @@ import {
 import { resolvePmRangeFromCanonical } from '../../utils/resolvePmRangeFromCanonical.js'
 import { anchorDebug, anchorDebugWarn } from '../../utils/anchorDebug.js'
 import { fromEditorMarkdown, toEditorMarkdown } from '../../utils/markdownLineBreaks'
+import { analyzeGfmTableMarkdown } from '../../utils/normalizeGfmTableCells.js'
+import { createTablePastePlugin } from '../../utils/tablePastePlugin.js'
+import { reportTablePaste, shouldReportTablePasteMarkdown } from '../../utils/tablePasteDebug.js'
 import EditorToolbar from './EditorToolbar.vue'
 
 const model = defineModel({ type: String, default: '' })
@@ -421,6 +424,8 @@ function attachEditorPlugins(ctx) {
     () => queueMicrotask(() => syncPmHighlightFromAnchor()),
   )
 
+  const tablePastePlugin = createTablePastePlugin()
+
   const selectionPlugin = new Plugin({
     props: {
       handleDOMEvents: {
@@ -461,7 +466,9 @@ function attachEditorPlugins(ctx) {
     },
   })
 
-  ctx.update(prosePluginsCtx, (plugins) => plugins.concat(anchorPlugin, selectionPlugin))
+  ctx.update(prosePluginsCtx, (plugins) =>
+    plugins.concat(anchorPlugin, tablePastePlugin, selectionPlugin),
+  )
 }
 
 function onEscapeKey(event) {
@@ -502,6 +509,12 @@ onMounted(async () => {
         .markdownUpdated((_, markdown) => {
           if (applyingExternalChange.value || sourceOpen.value) return
           const normalized = fromEditorMarkdown(markdown)
+          if (shouldReportTablePasteMarkdown()) {
+            reportTablePaste('md', {
+              ...analyzeGfmTableMarkdown(normalized),
+              preview: normalized.slice(0, 240),
+            })
+          }
           lastEditorMarkdown.value = toEditorMarkdown(normalized)
           if (normalized !== model.value) {
             model.value = normalized
